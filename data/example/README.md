@@ -1,0 +1,1 @@
+These are sample patient logfiles created using artificial data.
