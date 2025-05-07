@@ -1,0 +1,5 @@
+# Ignore everything in this directory
+# CDS Dashboard Log files are placed here
+*
+# Except this file
+!.gitignore

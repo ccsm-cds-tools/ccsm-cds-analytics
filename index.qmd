@@ -1,0 +1,706 @@
+---
+title: "CCSM CDS Analytics"
+date: today
+date-format: D MMMM YYYY
+format: html
+editor: source
+author: Michael Nosal (mnosal@mitre.org)
+version: 0.1
+---
+
+```{r setup, include=FALSE}
+# setup for data processing
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+
+source('R/_load_libraries.R')
+source('R/_utility_functions.R')
+
+```
+
+`r as.Date(now(), format = "%Y-%m-%d")`
+
+©Copyright 2025 - MITRE Corporation. For limited distribution.
+
+# Cervical Cancer Screening and Management (CCSM) Clinical Decision Support (CDS) Pilot Analytics
+
+## Analysis through logging CDS patient expressions
+
+When the CCSM CDS processes a patient, it automatically evaluates over 800 expressions about the patient history. These items define attributes about the patient which are then used to evaluate the logical statements which represent the clinical guideline recommendations.
+
+
+## Log Entries
+The CCSM CDS Dashboard is set to log patient information every time it 'fires' the CDS and generates a recommendation. This occurs when the Dashboard is launched for a patient, when the user hits 'refresh', and every time a toggle switch is changed. This means the Dashboard may generate multiple log entries during the course of an 'encounter' with the patient. A patient may also be viewed in the Dashboard on multiple occasions, generating log entries each time. 
+
+```{r logfile_parsing}
+# Load available logfiles
+datafiles_path <- here('data','logfiles')
+files <- dir(datafiles_path, pattern = "*.*")
+logfile_count <- list(
+  logfiles = 0,
+  total_entries = 0,
+  unique_patients = 0
+)
+logfile_count$logfiles <- length(files)
+
+# Stop if length(files) == 0
+
+# load individual JSON files into single unexpanded tbl_json
+# Logfiles are in jsonl (JSON Lines) format, either compressed (.log.gz) or
+# uncompressed (.log)
+logdata <- files %>%
+       map_df(~read_json(file.path(datafiles_path, .), format="jsonl"))
+
+logfile_count$total_entries <- nrow(logdata)
+
+# extract just the id and timestamps as a data frame
+logdata_timestamps <- as_tibble(
+  logdata %>%
+    spread_all(recursive = FALSE) %>%
+    mutate(timestamp = ymd_hms(timestamp), id= as_factor(id)) %>%
+    select(id,timestamp))
+
+logfile_start_date <- as.Date(min(logdata_timestamps$timestamp))
+logfile_end_date <- as.Date(max(logdata_timestamps$timestamp))
+
+# Now we can produce a timestamp scatterplot to show when data from the CDS was logged
+# logdata_timestamps
+
+# df <- data.frame(
+#   dates = as.POSIXct(date(logdata_timestamps$timestamp)),
+#   times = as.POSIXct(logdata_timestamps$timestamp)
+# )
+# ggplot(df, aes(x=dates, y=times)) +
+#   geom_point() +
+#   scale_y_datetime(breaks=date_breaks("4 hour"), labels=date_format("%H:%M")) +
+#   scale_x_datetime(breaks = date_breaks("1 day")) +
+#   theme(axis.text.x=element_text(angle=90))
+
+# Perform a sanity check on the logdata table itself
+# The top level data is from the logger service (id, level, message, service, timestamp)
+# This should be a 5x3 tibble, with the count column n the same for all and equal to the number of logfile_total_entries.
+# If not, there is something unusual in the log data.
+top_level_log_types <- logdata %>% gather_object %>% json_types %>% count(name, type)
+
+# If nrow(top_level_log_types) != 5, something is wrong
+# If length(unique(top_level_log_types)) != 1, something is wrong
+# If unique(top_level_log_types$n) != nrow(logdata), something is wrong
+# unique(top_level_log_types$level) == "info"
+# 
+
+# Extract the message object
+# "message": {
+#   "cdsApplyEnd": 1745520994391,
+#   "cdsApplyStart": 1745520986793,
+#   "patientInfo": { OBJ },
+#   "patientReference": "Patient/123abc456def",
+#   "payload": { OBJ },
+#   "timeRequestSent": "2025-04-24T18:56:34.391Z",
+#   "toggleStatus": { OBJ }
+# }
+# The message object is from the Dashboard, and is where Dashboard parameters are sent.
+
+logdata_messages <- as_tibble(
+  logdata %>% 
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+    spread_all(recursive = FALSE) %>%
+    enter_object(toggleStatus) %>%
+    spread_all %>%
+    select(-document.id) %>%
+    mutate(cdsApplyTime = cdsApplyEnd - cdsApplyStart,
+           patientReference = as_factor(patientReference),
+           timeRequestSent = ymd_hms(timeRequestSent))
+)
+
+# At this point, we have a tibble of 
+# cdsApplyStart, cdsApplyEnd, patientReference, timeRequestSent and the 5 toggleStatus values
+# isImmunosuppressed, isPregnant, isPregnantConcerned, isSymptomatic and isToggleChanged
+# we'll mutate a cdsApplyTime column to be the diff between cdsApplyEnd and cdsApplyStart in milliseconds
+
+# here we can get the number of unique patients in the log by checking patientReference, which is the patient's FHIR identifier
+logfile_count$unique_patients <- length(unique(logdata_messages$patientReference))
+ 
+# Count the number of log entries for every patient and show the top 10 by number of log entries
+# to get a sense of how often the CDS was triggered on patients
+# X patients had 23 log entries
+# Y patients had 21 log entries
+# etc, etc
+patient_message_summary <- logdata_messages %>%
+  group_by(patientReference) %>%
+  summarize(count = n())
+
+# We can also use this table to get a summary of how many times each toggle switch was used
+# returns a named vector, use toggle_summary["isPregnant"] to access named value
+toggle_summary <- colSums(logdata_messages %>% select(isImmunosuppressed, isPregnant, isPregnantConcerned, isSymptomatic, isToggleChanged))
+
+# Produce table showing how many times each toggle switch was used
+
+```
+## Logfile Data Summary
+
+This report evaluated a total of `r logfile_count$logfiles` log files from `r logfile_start_date` to `r logfile_end_date`. These log files contained a total of `r logfile_count$total_entries` total entries. There were `r logfile_count$unique_patients` unique patient identifiers in these entries. 
+
+## Patient Demographic Information
+```{r patient_demographics}
+
+# Now we will drill into the patientInfo. This contains the relevant information from the Patient resourceType
+# Note that 'race' is actually concatenated with ethnicity e.g. "White or Caucasian; Not Hispanic or Latino"
+# but is separated by semi-colon, so we can split
+# This should include patientReference and filtered to unique patients, so we aren't counting the 
+# same patient multiple times
+# patientInfo should include:
+# patientInfo: {
+#    name: 'Marge Simpson',
+#    id: [ OBJ ],
+#    isPregnant: false,
+#    dateOfBirth: { value: [Object] },
+#    sexAtBirth: 'Female',
+#    age: 64,
+#    gender: 'female',
+#    primaryLanguage: 'English',
+#    race: 'White or Caucasian; zzNot Hispanic or Latino'
+# We are mostly interested in age, race, ethnicity, pregnancy status at the moment
+# NOTE: Ethnicity is separated by "; " 
+
+logdata_all_patientinfo <- tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      spread_values(patientReference = jstring('patientReference')) %>%
+      enter_object(patientInfo) %>%
+        spread_values(age=jinteger('age'),
+                      racestr=jstring('race'),
+                      isPregnant = jlogical('isPregnant')) %>%
+      select(-document.id, age, racestr, isPregnant) %>%
+      mutate(patientReference = as.factor(patientReference)) %>%
+      separate(racestr, c("race","ethnicity"), sep="; ", extra = "drop")
+)[,c(1,2,3,4,5,6)]
+
+logdata_unique_patientinfo <- logdata_all_patientinfo %>% distinct(patientReference, .keep_all = TRUE)
+
+patient_demographics <- logdata_unique_patientinfo %>%
+  select(age, race, ethnicity, isPregnant) %>%
+  mutate(age_group = cut(age, breaks=c(0,20,24,29,65,120)))
+
+patient_age_groups <- hist(patient_demographics$age, breaks=c(0,20,24,29,65,120), plot = FALSE)
+
+race_list <- tibble(
+  race = c("White or Caucasian",
+  "Black or African American",
+  "Asian",
+  "American Indian or Alaska Native",
+  "Native Hawaiian or Other Pacific Islander",
+  "Other",
+  NA)
+)
+
+ethnicity_list <- tibble(
+  ethnicity = c("Hispanic or Latino","Not Hispanic or Latino",NA)
+)
+
+# Note this does not correctly handle race values not included in race_list (e.g. "White" instead of "White or Caucasian")
+patient_race_groups <- race_list %>%
+  inner_join(patient_demographics) %>%
+  group_by(race) %>%
+  summarize(count = n()) %>%
+  right_join(race_list) %>%
+  mutate(count = replace_na(count, 0))
+
+patient_ethnicity_groups <- ethnicity_list %>%
+  inner_join(patient_demographics) %>%
+  group_by(ethnicity) %>%
+  summarize(count = n()) %>%
+  right_join(ethnicity_list) %>%
+  mutate(count = replace_na(count, 0))
+
+demographics_tbl <- tibble(
+  col = c("Total Unique Patients","Age < 20","Age 20-24","Age 25-29","Age 30-65","Age 65+","White or Caucasian","Black or African American","Asian","American Indian or Alaska Native","Native Hawaiian or Other Pacific Islander","Other/Unknown","Hispanic or Latino","Non-Hispanic","Other/Unknown"),
+  patients = c(
+    logfile_count$unique_patients,
+    patient_age_groups$counts[1], # under 20
+    patient_age_groups$counts[2], # 20-24
+    patient_age_groups$counts[3], # 25-29
+    patient_age_groups$counts[4], # 30-65
+    patient_age_groups$counts[5], # 65-120
+    patient_race_groups %>% filter(race == 'White or Caucasian') %>% .$count,
+    patient_race_groups %>% filter(race == 'Black or African American') %>% .$count,
+    patient_race_groups %>% filter(race == 'Asian') %>% .$count,
+    patient_race_groups %>% filter(race == 'American Indian or Alaska Native') %>% .$count,
+    patient_race_groups %>% filter(race == 'Native Hawaiian or Other Pacific Islander') %>% .$count,
+    (patient_race_groups %>% filter(is.na(race)) %>% .$count +
+      patient_race_groups %>% filter(race == 'Other') %>% .$count),
+    patient_ethnicity_groups %>% filter(ethnicity == 'Hispanic or Latino') %>% .$count,
+    patient_ethnicity_groups %>% filter(ethnicity == 'Not Hispanic or Latino') %>% .$count,
+    patient_ethnicity_groups %>% filter(is.na(ethnicity)) %>% .$count
+  ),
+  pct = round((patients/logfile_count$unique_patients) * 100,1)
+)
+
+kable(demographics_tbl,  col.names = c("Category","Count","%"), align='l',caption="<h1>Demographic Summary</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("Age Group (years)", 2, 6) %>%
+  pack_rows("Race", 7, 12) %>%
+  pack_rows("Ethnicity",13,15)
+
+
+```
+
+# Patient Pregnancy
+
+The CCSM CDS does attempt to retrieve pregnancy status of a patient, however this is not always well-documented in the patient record. The CDS Dashboard includes two toggle switches related to pregnancy: Patient is Pregnant and Patient has Future Pregnancy Concerns.
+
+We can examine the logged data to determine:
+
+- How many patients were noted as pregnant during any log entry?
+- How many patients were noted as pregnant at their most recent 'visit' (the most recent time they were evaluated by the CCSM CDS Dashboard)?
+- How many patients who were **not** noted as pregnant in their record, but who used the "Pregnant" toggle at least one time?
+- How many patients who were **not** noted as pregnant in their record, but who used the "Future pregnancy concerns" toggle at least one time?
+
+These values are based on unique patients, not the number of log entries for those patients. 
+
+```{r patient_pregnancy}
+# This is a little more complicated, as pregnancy status can change between visits
+# What we would like:
+# How many patients were noted as pregnant during ANY log entry
+# How many patients were noted as pregnant at their MOST RECENT visit?
+# How many patients were NOT noted as pregnant during their visit but had the isPregnant toggle on?
+# How many patients were NOT noted as pregnant during their visit but had the isPregnantConcerned toggle on?
+# We can return to this table later to compare against specific histories (e.g. HPV+)
+
+patient_count <- list(
+  pregnant_any = 0,
+  pregnant_most_recent = 0,
+  pregnant_toggle = 0,
+  pregnant_concerned_toggle = 0
+)
+
+logdata_pregnant_info <- tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>%  
+    enter_object(message) %>%
+      spread_all(recursive = FALSE) %>%
+      enter_object(toggleStatus) %>%
+      spread_all() %>%
+      select(id, timeRequestSent, isPregnant, isPregnantConcerned) %>%
+      rename(isPregnantToggle = isPregnant, isPregnantConcernedToggle = isPregnantConcerned) %>%
+      left_join(logdata_all_patientinfo, by="id") %>%
+      select( -race, -ethnicity)
+)
+
+# Find patients who were noted as pregnant at any logged visit
+pregnant_any_time <- logdata_pregnant_info %>% group_by(patientReference) %>%
+  filter(isPregnant == TRUE) %>%
+  summarize(count = n())
+# There will be one row for every patient that was pregnant at any time
+# The count column will show the total number of log entries, not encounters or visits
+patient_count$pregnant_any <- nrow(pregnant_any_time)
+
+# How many patients were noted as pregnant at their MOST RECENT visit?
+# Any visit will correspond to at least on log entry, so the most recent log entry for the patient will do
+pregnant_most_recent <- logdata_pregnant_info %>% 
+  group_by(patientReference) %>%
+  slice_max(timeRequestSent) %>%
+  filter(isPregnant == TRUE)
+# There will be one row for every patient who was pregnant at their last visit
+patient_count$pregnant_most_recent <- nrow(pregnant_most_recent)
+
+# How many patients were NOT noted as pregnant during their visit but had the isPregnant toggle on?
+not_pregnant_with_toggle <- logdata_pregnant_info %>%
+    filter(isPregnant == FALSE, isPregnantToggle == TRUE) %>%
+  group_by(patientReference) %>%
+  summarize(count = n())
+# there will be one row for every patient who was not pregnant but had the isPregnant toggle on at some point
+patient_count$pregnant_toggle <- nrow(not_pregnant_with_toggle)
+
+# How many patients were NOT noted as pregnant during their visit but had the isPregnantConcerned toggle on?
+not_pregnant_with_concerned_toggle <- logdata_pregnant_info %>%
+    filter(isPregnant == FALSE, isPregnantConcernedToggle == TRUE) %>%
+  group_by(patientReference) %>%
+  summarize(count = n())
+# there will be one row for every patient who was not pregnant but had the isPregnant toggle on at some point
+patient_count$pregnant_concerned_toggle <- nrow(not_pregnant_with_toggle)
+
+pregnant_count_tbl <- tibble(
+    col = c("Total Unique Patients","Pregnant at Any Entry","Pregnant at Most Recent Entry","Used Pregnant Toggle","Used Pregnant Concerned Toggle"),
+  patients = c(
+        logfile_count$unique_patients,
+        patient_count$pregnant_any,
+        patient_count$pregnant_most_recent,
+        patient_count$pregnant_toggle,
+        patient_count$pregnant_concerned_toggle
+  ),
+  pct = round((patients/logfile_count$unique_patients) * 100,1)
+  
+)
+kable(pregnant_count_tbl,  col.names = c("Category","Count","%"), align='l',caption="<h1>Patient Pregnancy Status</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("Pregnancy Status", 2, 3) %>%
+  pack_rows("Toggle Use", 4, 5) 
+
+
+
+```
+
+## Toggle Switch Usage
+
+Toggle switches are provided in the Dashboard to allow users to tell the CDS to consider additional information about the patient. For example, if the patient is currently immunosuppressed, but this isn't reflected in the patient record, the "Immunosuppressed" toggle may be switched on, and the CDS will evaluate the patient as if they are immunosuppressed. 
+
+These toggles may be switched on and off as many times as the user likes. Every time a toggle switch is changed, the CDS will automatically re-fire, compute the recommendation again, and add another log entry for the patient. This table summarizes the number of times each toggle switch as set to 'on' across every log entry. It does not show whether the recommendation was changed, only that the toggle was set. 
+
+```{r toggle-switch-usage}
+# logdata_messages has all toggle switch usage.
+toggle_usage_tbl <- tibble(
+  col = c("Total Log Entries","Immunosuppressed","Pregnant","Future pregnancy concerns","Symptomatic","Any Toggle Changed (On or Off)"),
+  toggle_counts = c(
+    logfile_count$total_entries,
+    sum(logdata_messages$isImmunosuppressed),
+    sum(logdata_messages$isPregnant),
+    sum(logdata_messages$isPregnantConcerned),
+    sum(logdata_messages$isSymptomatic),
+    sum(logdata_messages$isToggleChanged)
+  ),
+  pct = round(toggle_counts/logfile_count$total_entries * 100,1)
+)
+kable(toggle_usage_tbl, col.names = c("","Count","%"), align='l', caption="<h1>Toggle Switch Usage</h1>") %>%
+    kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("Toggle Switch Use", 2, 6)
+
+
+```
+
+## CDS Performance
+The performance of the CDS is dependent on the size of the patient history and how complex the logic is required to produce a recommendation. It is also affected by external factors, such as the load on the FHIR server, database and network latency. It is important to the user experience that the CDS is able to read a patient history and generate a recommendation as quickly as possible. 
+
+```{r cds-performance}
+# For now, just generate a histogram of overall applyCds timings. 
+# Additional performance metrics can be developed later.
+# logdata_messages has the timings for apply
+
+apply_summary <- round(summary(logdata_messages$cdsApplyTime)/1000,1)
+apply_tbl <- tibble(col=c("Min","1st Quartile","Mean","3rd Quartile","Max"),
+                    val=c(apply_summary[1],
+                          apply_summary[2],
+                          apply_summary[3],
+                          apply_summary[4],
+                          apply_summary[5])
+)
+kable(apply_tbl, col.names = c("Value","Time (sec)"), align='l', caption="<h1>CDS Apply Time</h1>") %>%
+    kable_styling(bootstrap_options = c("striped"), full_width = T)
+```
+
+
+This is a histogram of the time required by the CDS to generate a recommendation (the "apply" time). It is only one measure of the overall performance of the CDS and Dashboard (for example, it does not account for the time required to fetch the patient information and history from the EHR FHIR Server).
+
+(NOTE: This histogram will look strange until there is a sufficient number of results)
+
+```{r apply-histogram}
+# Should consider checking for a minimum number of entries before deciding to draw a histogram
+
+apply_plot <- logdata_messages %>%
+  ggplot(aes(x=cdsApplyTime) ) +
+    geom_histogram()  +
+    geom_density(alpha=.2, fill="#FF6666") +
+    ggtitle("CDS Apply Time") +
+    xlab("Apply Time in ms")
+apply_plot
+```
+
+# Recommendation Pathways
+
+The CCSM CDS is broadly structured in two pathways: Screening recommendations and Management recommendations. Screening recommendations apply when the patient is eligible for routine screening, and has **not** had any of the following:
+
+- Recent Abnormal Screening
+- Recent Abnormal Histology
+- High-grade pre-cancer cervical lesion
+- Cervical cancer diagnoses
+- High-grade or cancer histology results
+
+Patients may receive specialized recommendations for screening if they are under 30, over 65, currently pregnant, immunocompromised, had exposure to DES in utero or are experiencing abnormal uterine/vaginal bleeding.
+
+The Management pathway generates recommendations when the patient has an abnormal result or pre-cancer diagnoses. Patients may receive specialized recommendations for management if they have 'common' abnormalities (HPV-positive), 'rare' abnormalities (CIN3), or are a special population (under 25, pregnant, immunosuppressed or have had a hysterectomy). There are many recommendations for specific circumstances not covered by the general risk tables. 
+
+```{r recommendation-pathways}
+# How many patients received a screening recommendation?
+# What pathways/groups did they receive those recommendations from?
+# We will look for ScreeningLibrary.DecisionAids.recommendation != null
+# We want a table with log entries and the decision aid information for Screening and Management pathways
+
+# Build a table showing all log entries, toggle settings and Management and Screening recommendations
+# We want to include the toggle settings so that we can filter recommendations that were made with 
+# no toggles set vs. those with toggle switches set. We also add the timings to see how
+# performance varies by pathway.
+logdata_pathways <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      spread_values(age = jinteger('patientInfo','age')) %>%
+      enter_object(payload) %>%
+        spread_values(
+          mgmt_recommendation = jstring('ManagementLibrary','DecisionAids','recommendation'),
+          mgmt_recommendationDate = jstring('ManagementLibrary','DecisionAids','recommendationDate'),
+          mgmt_recommendationGroup = jstring('ManagementLibrary','DecisionAids','recommendationGroup')
+        )  %>%
+        spread_values(
+          scrn_recommendation = jstring('ScreeningLibrary','DecisionAids','recommendation'),
+          scrn_recommendationDate = jstring('ScreeningLibrary','DecisionAids','recommendationDate'),
+          scrn_recommendationGroup = jstring('ScreeningLibrary','DecisionAids','recommendationGroup')
+        ) %>%
+      mutate(
+        mgmt_recommendationDate = date(mgmt_recommendationDate),
+        scrn_recommendationDate = date(scrn_recommendationDate)) %>%
+  select(-document.id)  
+) %>%
+  left_join(logdata_messages, by='id') # Add columns which have toggle status and timings 
+
+logdata_pathways_notoggle <- logdata_pathways %>%
+  filter(!isToggleChanged)
+
+rec_counts = list(
+  recs_all = 0,
+  mgmt_recs_all = 0,
+  scrn_recs_all = 0,
+  mgmt_recs_def = 0,
+  scrn_recs_def = 0
+)
+rec_counts$recs_all <- nrow(logdata_pathways)
+rec_counts$recs_def <- nrow(logdata_pathways_notoggle)
+
+# We need to check that screening recommendation is null; 
+# A patient who would normally get a management recommendation 
+# will get a screening recommendation if they are symptomatic. 
+# They will have both a screening recommendation and a management
+# recommendation, but the screening one 'wins'
+management_recs_all_tbl <- logdata_pathways %>%
+  filter(!is.na(mgmt_recommendation), is.na(scrn_recommendation)) %>%
+  select(-scrn_recommendation, -scrn_recommendationDate, -scrn_recommendationGroup)
+
+rec_counts$mgmt_recs_all <- nrow(management_recs_all_tbl)
+
+# get the 'base' recommendations generated when no toggle switches were used
+# isToggleChanged is FALSE when all toggles are initially off. 
+management_recs_notoggle_tbl <- management_recs_all_tbl %>%
+  filter(!isToggleChanged)
+
+rec_counts$mgmt_recs_def <- nrow(management_recs_notoggle_tbl)
+
+# this is still a table of all log entries, just the default no toggle state
+# there could be multiple entries for the same patient (reload, refresh, etc)
+
+# Note it is possible to have a screening recommendation AND a management recommendation
+# if the patient is symptomatic. 
+screening_recs_all_tbl <- logdata_pathways %>%
+  filter(!is.na(scrn_recommendation))
+
+screening_recs_notoggle_tbl <- screening_recs_all_tbl %>%
+  filter(!isToggleChanged)
+
+rec_counts$scrn_recs_all <- nrow(screening_recs_all_tbl)
+rec_counts$scrn_recs_def <- nrow(screening_recs_notoggle_tbl)
+
+rec_counts_tbl <- tibble(
+  cols=c("Management Recommendations", "Screening Recommendations","Total","Management Recommendations","Screening Recommendations","Total"),
+  count = c(rec_counts$mgmt_recs_all, rec_counts$scrn_recs_all, rec_counts$recs_all, rec_counts$mgmt_recs_def, rec_counts$scrn_recs_def, rec_counts$recs_def),
+  pct = round(count/rec_counts$recs_all * 100,1)
+)
+kable(rec_counts_tbl,  col.names = c("Pathway","Count","% of All Entries"), align='l',caption="<h1>Pathway Recommendation Counts</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("All Entries", 1, 3) %>%
+  pack_rows("Default Recommendations", 4,6)
+```
+
+
+If the counts for "all entries" are larger than for "default" that means that the toggle switches have been used when viewing a patient in the Dashboard. Switching a toggle switch to "on" and back to "off" will cause two log entries to be generated. "Default" means the recommendation was generated without using any toggle switches, but can still include repeat viewings of the same patient in the Dashboard.
+
+## Screening Pathway
+
+The Screening pathway includes recommendations arranged by special groups. We can summarize which groups produced screening recommendations for patients. These are across all log entries.
+
+```{r screening-rec-groups}
+
+# Summarize recommendations for Screening vs Management
+# Note it is possible to have a screening recommendation AND a management recommendation
+# if the patient is symptomatic. 
+
+# Count by groups
+screening_groups_tbl <- screening_recs_all_tbl %>%
+  count(scrn_recommendationGroup)
+kable(screening_groups_tbl,  align='l', col.names = c('Group','Count'), caption="<h1>Screening Groups (All log entries)</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)
+
+# Count by recommendation and group
+screening_rec_group_tbl <- screening_recs_all_tbl %>% group_by(scrn_recommendation,scrn_recommendationGroup) %>% summarize(Count = n())
+kable(screening_rec_group_tbl,  align='l', col.names = c('Recommendation',  'Group','Count'), caption="<h1>Screening Recommendations (All log entries)</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)
+
+
+```
+
+We can also look at the distinct recommendations patients received when evaluated by the CDS with no toggle switches used. Note that a patient may receive the same screening recommendation multiple times because they are seen on multiple visits, or the CDS Dashboard was opened multiple times for the same patient. 
+
+```{r screening-recs-by-patient}
+# get the 'base' recommendation with no toggle switches used
+screening_recs_by_patient <- screening_recs_notoggle_tbl %>%
+  group_by(patientReference, scrn_recommendation, scrn_recommendationGroup) %>%
+  summarize(count = n()) 
+
+screening_recs_by_type <- screening_recs_by_patient %>%
+  group_by(scrn_recommendation, scrn_recommendationGroup) %>%
+  summarize(patients = n())
+
+kable(screening_recs_by_type,  align='l', col.names = c('Recommendation',  'Group','Patient Count'), caption="<h1>Screening Recommendations (Unique Patients)</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)  
+```
+
+
+## Under 30 Screening
+
+The CDS contains specific recommendations for patients under age 30. We can see the count of patients under 30 who received screening recommendations. Again, note that individual patients may receive more than one recommendation because they have been evaluated by the CDS on more than one occassion. 
+
+```{r under-30-screening}
+# We can filter those patients under 30 from the notoggle table
+# All counts of a patient under 30 receiving a recommendation/group 
+screening_under30_by_patient <- screening_recs_notoggle_tbl %>%
+  filter(age < 30) %>%
+  group_by(patientReference,scrn_recommendation, scrn_recommendationGroup) %>%
+    summarize(count = n())
+
+screening_under30_by_type <- screening_under30_by_patient %>%
+  group_by(scrn_recommendation, scrn_recommendationGroup) %>%
+  summarize(patients = n())
+kable(screening_under30_by_type,  align='l', col.names = c('Recommendation',  'Group','Patient Count'), caption="<h1>Under 30 Screening Recommendations (Unique Patients)</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)  
+```
+
+## Additional Screening Results
+Additional screening results will be added here. 
+
+
+
+## Management Pathway Recommendations
+
+The Management Pathway covers recommendations for 2019 ASCCP Risk-Based Management Consensus Guidelines, and is organized in three main pathways: Common Abnormalities & Risk Tables, Rare Abnormalities (Guideline sections G, H, I and J) and Special Populations (Under 25, Immunocompromised, Pregnant, Hysterectomy).
+
+```{r management-recommendations}
+# We want to determine the management pathway which produced each recommendation
+# If ManageSpecialPopulation.WhichPopulationMadeTheRecommendation is not null then Special Population
+# If ManageRareAbnormality.WhichRarityMadeTheRecommendation is not null then Rare Abnormality
+# else Common Abnormality
+
+# We need to parse out the log data carefully, as there are values/objects which can be null
+# causing an error if we simply try to spread_all across the entire payload.
+# Note that this pass does not expand all nested objects - we'll do that as needed for
+# individual metrics
+
+management_data_dashboard <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,DashboardLibrary) %>%
+        spread_all
+)
+
+management_data_library <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManagementLibrary) %>%
+        spread_all(recursive = FALSE)
+)
+
+management_data_common <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManageCommonAbnormality) %>%
+        spread_all(recursive = FALSE)
+)
+
+management_data_rare <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManageRareAbnormality) %>%
+        spread_all(recursive = FALSE)
+)
+
+management_data_special <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManageSpecialPopulation) %>%
+        spread_all(recursive = FALSE)
+)
+management_data_collate <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,CollateManagementData) %>%
+        spread_all(recursive = FALSE)
+)
+# Join 'em up!
+management_data_all <- management_recs_all_tbl %>%
+  left_join(management_data_dashboard) %>%
+  left_join(management_data_common) %>%
+  left_join(management_data_rare) %>%
+  left_join(management_data_special) %>%
+  mutate(Pathway = ifelse(!is.na(WhichPopulationMadeTheRecommendation),"Special Population",
+                          ifelse(!is.na(WhichRarityMadeTheRecommendation),"Rare Abnormality",
+                          "Common Abnormality")))
+
+management_pathway_recs <- management_data_all %>%
+  select(id,Pathway, Group = mgmt_recommendationGroup, Recommendation = mgmt_recommendation)
+
+management_pathway_plot <- management_pathway_recs %>% ggplot(aes(x = Pathway, fill=Recommendation, )) +
+  geom_bar(position="stack") +
+  ggtitle("Recommendation Count by Management Pathway") +
+  xlab("Management Pathway") + 
+  ylab("Recommendation Count")
+management_pathway_plot
+```
+
+```{r}
+management_pathway_group_tbl <- management_pathway_recs %>% group_by(Pathway,Group) %>% summarize(Count = n())
+
+kable(management_pathway_group_tbl,  align='l', col.names = c('Pathway',  'Group','Recommendation Count')) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)
+
+```
+```{r}
+management_rec_group_tbl <- management_pathway_recs %>% group_by(Recommendation,Group) %>% summarize(Count = n())
+kable(management_rec_group_tbl,  align='l', col.names = c('Recommendation',  'Group','Count')) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)
+```
+
+
+## Risk Table Recommendations
+Patients who receive a recommendation from 
+```{r}
+
+management_risk_table_recs <- management_data_all %>%
+  filter(Pathway == "Common Abnormality") %>%
+  group_by(TableRecommendation)
+
+management_risk_table_recs_plot <- management_risk_table_recs %>% ggplot(aes(x=TableRecommendation)) +
+  ggtitle("Risk Table Recommendations") +
+  ylab("Number of patients") +
+  xlab("Risk Table Recommendation") +
+  geom_bar()
+
+management_risk_table_recs_plot
+```
+```{r}
+# Here's how to drill into an array 
+management_data_any_cyto_ascus <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,CollateManagementData) %>%
+        # spread_all(recursive = FALSE) %>%
+        enter_object(AnyCytologyInterpretedAsAscusOrAbove) %>%
+        gather_array %>%
+        spread_all
+)
+```
+
+
+    

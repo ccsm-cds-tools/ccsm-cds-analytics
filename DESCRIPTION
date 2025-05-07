@@ -1,0 +1,21 @@
+Package: ccsm-cds-analytics
+Title: CCSM CDS Analytics
+Version: 0.0.0.9000
+Authors@R:
+    person("Michael", "Nosal", , "mnosal@mitre.org", role = c("aut", "cre"))
+Description: Analytics scripts to process data logged from Cervical Cancer
+    Screening and Management (CCSM) Clinical Decision Support (CDS).
+License: MIT + file LICENSE
+ByteCompile: true
+Encoding: UTF-8
+LazyData: true
+URL: https://github.com/ccsm-cds-tools/ccsm-cds-analytics
+BugReports: https://github.com/ccsm-cds-tools/ccsm-cds-analytics/issues
+Depends:
+    R (>= 4.4)
+Imports: 
+    dplyr (>= 1.0.8)
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.1.2
+Suggests: 
+    testthat
