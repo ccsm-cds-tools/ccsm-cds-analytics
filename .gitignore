@@ -7,3 +7,5 @@ public/
 .DS_Store
 index-files/
 
+
+/_*.local

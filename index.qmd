@@ -14,7 +14,9 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE)
 
 source('R/_load_libraries.R')
 source('R/_utility_functions.R')
-
+base::readRenviron("_environment")
+base::readRenviron("_environment.local")
+base::readRenviron("_environment.dev")
 ```
 
 `r as.Date(now(), format = "%Y-%m-%d")`
@@ -33,8 +35,20 @@ The CCSM CDS Dashboard is set to log patient information every time it 'fires' t
 
 ```{r logfile_parsing}
 # Load available logfiles
+
+# Default is to look in ./data/logfiles
 datafiles_path <- here('data','logfiles')
-files <- dir(datafiles_path, pattern = "*.*")
+
+# LOGFILE_DIRECTORY environment variable may point to a different location for logfiles
+logfiles_env_directory <- Sys.getenv("LOGFILES_DIRECTORY")
+
+logfiles_directory <- ifelse(
+  logfiles_env_directory != "",
+  logfiles_env_directory,
+  datafiles_path)
+
+# Read all .log and .log.gz files in the directory
+files <- dir(logfiles_directory, pattern = "*.log|*.log.gz")
 logfile_count <- list(
   logfiles = 0,
   total_entries = 0,
@@ -42,13 +56,17 @@ logfile_count <- list(
 )
 logfile_count$logfiles <- length(files)
 
-# Stop if length(files) == 0
+# Stop if there are no files to read length(files) == 0
+if (logfile_count$logfiles == 0) {
+  print(paste("No log files found at", logfiles_directory))
+  knitr::knit_exit()
+} else {
 
 # load individual JSON files into single unexpanded tbl_json
 # Logfiles are in jsonl (JSON Lines) format, either compressed (.log.gz) or
 # uncompressed (.log)
 logdata <- files %>%
-       map_df(~read_json(file.path(datafiles_path, .), format="jsonl"))
+       map_df(~read_json(file.path(logfiles_directory, .), format="jsonl"))
 
 logfile_count$total_entries <- nrow(logdata)
 
@@ -134,7 +152,7 @@ patient_message_summary <- logdata_messages %>%
 toggle_summary <- colSums(logdata_messages %>% select(isImmunosuppressed, isPregnant, isPregnantConcerned, isSymptomatic, isToggleChanged))
 
 # Produce table showing how many times each toggle switch was used
-
+}
 ```
 ## Logfile Data Summary
 
@@ -563,12 +581,18 @@ screening_under30_by_patient <- screening_recs_notoggle_tbl %>%
   filter(age < 30) %>%
   group_by(patientReference,scrn_recommendation, scrn_recommendationGroup) %>%
     summarize(count = n())
-
-screening_under30_by_type <- screening_under30_by_patient %>%
-  group_by(scrn_recommendation, scrn_recommendationGroup) %>%
-  summarize(patients = n())
-kable(screening_under30_by_type,  align='l', col.names = c('Recommendation',  'Group','Patient Count'), caption="<h1>Under 30 Screening Recommendations (Unique Patients)</h1>") %>%
-  kable_styling(bootstrap_options = c("striped"), full_width = T)  
+if (nrow(screening_under30_by_patient) > 0)  {
+  
+ 
+  screening_under30_by_type <- screening_under30_by_patient %>%
+    group_by(scrn_recommendation, scrn_recommendationGroup) %>%
+    summarize(patients = n())
+  
+  kable(screening_under30_by_type,  align='l', col.names = c('Recommendation',  'Group','Patient Count'), caption="<h1>Under 30 Screening Recommendations (Unique Patients)</h1>") %>%
+    kable_styling(bootstrap_options = c("striped"), full_width = T)  
+  } else {
+  cat("No patients under 30 were found")
+}
 ```
 
 ## Additional Screening Results
@@ -702,5 +726,14 @@ management_data_any_cyto_ascus <-tidyjson::as_tibble(
 )
 ```
 
+## HPV and Cytology
 
+```{r hpv-cytology-crosstab}
+# The intent is to compare HPV results with Cytology results
+# We need to look at all patient default recommendations, because they may be seen on different dates
+# with different results. HPV-/NILM patients with no abnormalities in recent history would get a screening recommendation
+# but the main point of interest will be those with abnormalities who receive a management recommendation.
+
+# Get unique patient default entries
+```
     
