@@ -5,7 +5,7 @@ date-format: D MMMM YYYY
 format: html
 editor: source
 author: Michael Nosal (mnosal@mitre.org)
-version: 0.1
+version: 0.1.1
 ---
 
 ```{r setup, include=FALSE}
@@ -41,6 +41,10 @@ datafiles_path <- here('data','logfiles')
 
 # LOGFILE_DIRECTORY environment variable may point to a different location for logfiles
 logfiles_env_directory <- Sys.getenv("LOGFILES_DIRECTORY")
+logfiles_start_date <- as.Date(Sys.getenv("LOGFILES_START_DATE"))
+logfiles_end_date <- as.Date(Sys.getenv("LOGFILES_END_DATE"))
+
+logfiles_date_range <- paste0("ccsmcds-",seq(logfiles_start_date, logfiles_end_date, "days"))
 
 logfiles_directory <- ifelse(
   logfiles_env_directory != "",
@@ -48,24 +52,31 @@ logfiles_directory <- ifelse(
   datafiles_path)
 
 # Read all .log and .log.gz files in the directory
-files <- dir(logfiles_directory, pattern = "*.log|*.log.gz")
+all_logfiles <- dir(logfiles_directory, pattern = "*.log|*.log.gz")
+# now check if there is a date range to compare against
+if (length(logfiles_date_range) > 0) {
+    matching_logfiles <- all_logfiles |> keep(\(x) any(str_detect(logfiles_date_range,strsplit(x,".",fixed=TRUE)[[1]][1])))
+} else {
+  matching_logfiles <- all_logfiles
+}
+
 logfile_count <- list(
   logfiles = 0,
   total_entries = 0,
   unique_patients = 0
 )
-logfile_count$logfiles <- length(files)
+logfile_count$logfiles <- length(matching_logfiles)
 
 # Stop if there are no files to read length(files) == 0
 if (logfile_count$logfiles == 0) {
-  print(paste("No log files found at", logfiles_directory))
+  print(paste("No matching log files found at", logfiles_directory))
   knitr::knit_exit()
 } else {
 
 # load individual JSON files into single unexpanded tbl_json
 # Logfiles are in jsonl (JSON Lines) format, either compressed (.log.gz) or
 # uncompressed (.log)
-logdata <- files %>%
+logdata <- matching_logfiles %>%
        map_df(~read_json(file.path(logfiles_directory, .), format="jsonl"))
 
 logfile_count$total_entries <- nrow(logdata)
@@ -77,8 +88,8 @@ logdata_timestamps <- as_tibble(
     mutate(timestamp = ymd_hms(timestamp), id= as_factor(id)) %>%
     select(id,timestamp))
 
-logfile_start_date <- as.Date(min(logdata_timestamps$timestamp))
-logfile_end_date <- as.Date(max(logdata_timestamps$timestamp))
+logdata_start_date <- as.Date(min(logdata_timestamps$timestamp))
+logdata_end_date   <- as.Date(max(logdata_timestamps$timestamp))
 
 # Now we can produce a timestamp scatterplot to show when data from the CDS was logged
 # logdata_timestamps
@@ -156,7 +167,7 @@ toggle_summary <- colSums(logdata_messages %>% select(isImmunosuppressed, isPreg
 ```
 ## Logfile Data Summary
 
-This report evaluated a total of `r logfile_count$logfiles` log files from `r logfile_start_date` to `r logfile_end_date`. These log files contained a total of `r logfile_count$total_entries` total entries. There were `r logfile_count$unique_patients` unique patient identifiers in these entries. 
+This report evaluated a total of `r logfile_count$logfiles` log files from `r logdata_start_date` to `r logdata_end_date`. These log files contained a total of `r logfile_count$total_entries` total entries. There were `r logfile_count$unique_patients` unique patient identifiers in these entries. `r matching_logfiles`
 
 ## Patient Demographic Information
 ```{r patient_demographics}
@@ -681,37 +692,60 @@ management_pathway_plot <- management_pathway_recs %>% ggplot(aes(x = Pathway, f
   ylab("Recommendation Count")
 management_pathway_plot
 ```
+This chart shows the distribution of recommendations by the three main management pathways. Individual breakdowns by specific pathways will follow. 
 
 ```{r}
 management_pathway_group_tbl <- management_pathway_recs %>% group_by(Pathway,Group) %>% summarize(Count = n())
 
-kable(management_pathway_group_tbl,  align='l', col.names = c('Pathway',  'Group','Recommendation Count')) %>%
+kable(management_pathway_group_tbl,  align='l', col.names = c('Pathway',  'Group','Recommendation Count'),caption="<h1>Management Recommendations Summary</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T)
 
 ```
+
+### Management Recommendation Groups
+There are many ways for a patient to receive the same recommendation in the Management pathways. These are organized into groups of related guideline logic. This table shows the breakdown of different recommendations by guideline groups. 
+
 ```{r}
-management_rec_group_tbl <- management_pathway_recs %>% group_by(Recommendation,Group) %>% summarize(Count = n())
-kable(management_rec_group_tbl,  align='l', col.names = c('Recommendation',  'Group','Count')) %>%
+management_rec_group_tbl <- management_pathway_recs %>%
+  group_by(Recommendation,Group) %>%
+  summarize(Count = n()) %>% 
+  arrange(Recommendation, desc(Count))
+
+kable(management_rec_group_tbl,  align='l', col.names = c('Recommendation',  'Group','Count'), caption="<h1>Management Recommendation Counts by Group</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T)
 ```
 
 
 ## Risk Table Recommendations
-Patients who receive a recommendation from 
+
+The recommendations generated in the Common Abnormality pathway includes those produced by the Risk Tables. We can count the times a recommendation was produced from the Risk Tables. This is a specific subset of Management guidelines, and does not represent the full scope of possible recommendations. 
+
 ```{r}
 
-management_risk_table_recs <- management_data_all %>%
-  filter(Pathway == "Common Abnormality") %>%
+management_risk_table_recs <- management_data_all |>
+  filter(Pathway == "Common Abnormality", !is.na(WhichTableMadeTheRecommendation)) |>
   group_by(TableRecommendation)
 
 management_risk_table_recs_plot <- management_risk_table_recs %>% ggplot(aes(x=TableRecommendation)) +
   ggtitle("Risk Table Recommendations") +
-  ylab("Number of patients") +
+  ylab("Count of Recommendations") +
   xlab("Risk Table Recommendation") +
   geom_bar()
 
 management_risk_table_recs_plot
 ```
+```{r risk-tables-table}
+management_risk_group_tbl <- management_risk_table_recs %>%
+  group_by(mgmt_recommendation,mgmt_recommendationGroup) %>%
+  summarize(Count = n()) %>% 
+  arrange(mgmt_recommendation, desc(Count))
+
+management_risk_group_tbl <- janitor::adorn_totals(management_risk_group_tbl, where="row")
+
+kable(management_risk_group_tbl,  align='l', col.names = c('Recommendation','Group','Count'), caption="<h1>Risk Table Recommendation Counts</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)
+```
+
 ```{r}
 # Here's how to drill into an array 
 management_data_any_cyto_ascus <-tidyjson::as_tibble(
@@ -734,6 +768,32 @@ management_data_any_cyto_ascus <-tidyjson::as_tibble(
 # with different results. HPV-/NILM patients with no abnormalities in recent history would get a screening recommendation
 # but the main point of interest will be those with abnormalities who receive a management recommendation.
 
-# Get unique patient default entries
+# Get unique patient default entries (no toggle switches applied)
+# And add collate data (which includes MostRecentCytologyCotestResult and MostRecentHpvResult)
+cotest_cols <- c("Age Group" = "age_group","Most Recent Cytology Cotest Result" = "MostRecentCytologyCotestResult","HPV-" = "HPV-negative","HPV+" = "HPV-positive","HPV16+" = "HPV16+","HPV16-/18+" = "HPV16-, HPV18+","Unknown"="UNK","N/A"="<NA>")
+cotest_results_tbl <- logdata_pathways_notoggle %>%
+  left_join(management_data_collate) %>% 
+  select(id,patientReference,age,MostRecentCytologyCotestResult,MostRecentHpvResult) %>%
+  mutate(age_group = cut(age, breaks=c(0,20,24,29,65,120), labels=c("Under 21","21 to 25","26 to 29","30 to 65","Over 65")))
+
+
+# cotest_results_pivot_tbl <- cotest_results_tbl %>%
+#  pivot_wider(names_from = MostRecentHpvResult, values_from = MostRecentCytologyCotestResult, ) %>%
+#  janitor::clean_names()
+
+cotest_results_age_group <- cotest_results_tbl %>%
+  group_by(age_group,MostRecentCytologyCotestResult, MostRecentHpvResult) %>%
+  tally() %>%
+  spread(MostRecentHpvResult, n)
+
+cotest_results_age_group <- cotest_results_age_group %>%
+  mutate_at(c(3:ncol(cotest_results_age_group)), ~replace(., is.na(.), 0))  
+
+kable(cotest_results_age_group %>% rename(any_of(cotest_cols)),
+    align='l',
+    caption="<h1>Most Recent Cotest Results by Age Group</h1>"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)
+
 ```
     
