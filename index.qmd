@@ -770,18 +770,30 @@ management_data_any_cyto_ascus <-tidyjson::as_tibble(
 
 # Get unique patient default entries (no toggle switches applied)
 # And add collate data (which includes MostRecentCytologyCotestResult and MostRecentHpvResult)
+cotest_cols <- c("Age Group" = "age_group","Most Recent Cytology Cotest Result" = "MostRecentCytologyCotestResult","HPV-" = "HPV-negative","HPV+" = "HPV-positive","HPV16+" = "HPV16+","HPV16-/18+" = "HPV16-, HPV18+","Unknown"="UNK","N/A"="<NA>")
 cotest_results_tbl <- logdata_pathways_notoggle %>%
   left_join(management_data_collate) %>% 
   select(id,patientReference,age,MostRecentCytologyCotestResult,MostRecentHpvResult) %>%
-  mutate(age_group = cut(age, breaks=c(0,20,24,29,65,120)))
+  mutate(age_group = cut(age, breaks=c(0,20,24,29,65,120), labels=c("Under 21","21 to 25","26 to 29","30 to 65","Over 65")))
 
-cotest_results_pivot_tbl <- cotest_results_tbl %>%
-  pivot_wider(names_from = MostRecentHpvResult, values_from = MostRecentCytologyCotestResult, ) %>%
-  janitor::clean_names()
-cotest_results_tbl %>%
+
+# cotest_results_pivot_tbl <- cotest_results_tbl %>%
+#  pivot_wider(names_from = MostRecentHpvResult, values_from = MostRecentCytologyCotestResult, ) %>%
+#  janitor::clean_names()
+
+cotest_results_age_group <- cotest_results_tbl %>%
   group_by(age_group,MostRecentCytologyCotestResult, MostRecentHpvResult) %>%
   tally() %>%
   spread(MostRecentHpvResult, n)
+
+cotest_results_age_group <- cotest_results_age_group %>%
+  mutate_at(c(3:ncol(cotest_results_age_group)), ~replace(., is.na(.), 0))  
+
+kable(cotest_results_age_group %>% rename(any_of(cotest_cols)),
+    align='l',
+    caption="<h1>Most Recent Cotest Results by Age Group</h1>"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)
 
 ```
     
