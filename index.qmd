@@ -169,6 +169,72 @@ toggle_summary <- colSums(logdata_messages %>% select(isImmunosuppressed, isPreg
 
 This report evaluated a total of `r logfile_count$logfiles` log files from `r logdata_start_date` to `r logdata_end_date`. These log files contained a total of `r logfile_count$total_entries` total entries. There were `r logfile_count$unique_patients` unique patient identifiers in these entries. `r matching_logfiles`
 
+```{r parse-libraries}
+logdata_dashboard <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,DashboardLibrary) %>%
+        spread_all
+)
+
+logdata_management_library <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManagementLibrary) %>%
+        spread_all(recursive = FALSE)
+)
+
+logdata_common <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManageCommonAbnormality) %>%
+        spread_all(recursive = FALSE) %>%
+        mutate(DateOfMostRecentHpvReport = date(DateOfMostRecentHpvReport),
+               DateOfMostRecentPositiveScreeningResult = date(DateOfMostRecentPositiveScreeningResult))
+)
+
+# In the Risk Tables, there are management recommendations which are not associated with specific risk estimates.
+# For coding purposes, these are represented as -1 in the lookup tables used by the CDS. We'll need to replace these with "NA"
+logdata_relevant_row <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManageCommonAbnormality,RelevantRow) %>%
+        spread_all(recursive = FALSE) %>%
+        mutate(riskNow = na_if(riskNow, -1), risk5yr = na_if(risk5yr, -1))
+)
+
+logdata_rare_abnormality <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManageRareAbnormality) %>%
+        spread_all(recursive = FALSE)
+)
+
+logdata_special_population <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManageSpecialPopulation) %>%
+        spread_all(recursive = FALSE)
+)
+logdata_collate <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,CollateManagementData) %>%
+        spread_all(recursive = FALSE) %>%
+        mutate(MostRecentBiopsyReportDate = date(MostRecentBiopsyReportDate),
+               MostRecentCytologyReportDate = date(MostRecentCytologyReportDate),
+               DateOfFirstBiopsyAfterMostRecentHpvReport = date(DateOfFirstBiopsyAfterMostRecentHpvReport),
+               DateOfMostRecentCytologyBeforeBiopsy = date(DateOfMostRecentCytologyBeforeBiopsy))
+)
+```
+
 ## Patient Demographic Information
 ```{r patient_demographics}
 
@@ -190,28 +256,31 @@ This report evaluated a total of `r logfile_count$logfiles` log files from `r lo
 #    race: 'White or Caucasian; zzNot Hispanic or Latino'
 # We are mostly interested in age, race, ethnicity, pregnancy status at the moment
 # NOTE: Ethnicity is separated by "; " 
-
+# Table arranged by timeRequestSent Descending
 logdata_all_patientinfo <- tidyjson::as_tibble(
   logdata %>%
     spread_values(id = jstring(id)) %>% 
     enter_object(message) %>%
-      spread_values(patientReference = jstring('patientReference')) %>%
+      spread_values(patientReference = jstring('patientReference'), timeRequestSent = jstring('timeRequestSent')) %>%
       enter_object(patientInfo) %>%
         spread_values(age=jinteger('age'),
                       racestr=jstring('race'),
                       isPregnant = jlogical('isPregnant')) %>%
       select(-document.id, age, racestr, isPregnant) %>%
-      mutate(patientReference = as.factor(patientReference)) %>%
+      mutate(patientReference = as.factor(patientReference),
+             timeRequestSent = ymd_hms(timeRequestSent)) %>%
+      arrange(desc(timeRequestSent)) %>%
       separate(racestr, c("race","ethnicity"), sep="; ", extra = "drop")
-)[,c(1,2,3,4,5,6)]
+)[,c(1,2,3,4,5,6,7)]
 
+# get the unique patient info for the most recent entry 
 logdata_unique_patientinfo <- logdata_all_patientinfo %>% distinct(patientReference, .keep_all = TRUE)
 
 patient_demographics <- logdata_unique_patientinfo %>%
   select(age, race, ethnicity, isPregnant) %>%
-  mutate(age_group = cut(age, breaks=c(0,20,24,29,65,120)))
+  mutate(age_group = cut(age, breaks=c(0,19,24,29,65,120)))
 
-patient_age_groups <- hist(patient_demographics$age, breaks=c(0,20,24,29,65,120), plot = FALSE)
+patient_age_groups <- hist(patient_demographics$age, breaks=c(0,19,24,29,65,120), plot = FALSE)
 
 race_list <- tibble(
   race = c("White or Caucasian",
@@ -310,7 +379,7 @@ logdata_pregnant_info <- tidyjson::as_tibble(
       spread_all(recursive = FALSE) %>%
       enter_object(toggleStatus) %>%
       spread_all() %>%
-      select(id, timeRequestSent, isPregnant, isPregnantConcerned) %>%
+      select(id, isPregnant, isPregnantConcerned) %>%
       rename(isPregnantToggle = isPregnant, isPregnantConcernedToggle = isPregnantConcerned) %>%
       left_join(logdata_all_patientinfo, by="id") %>%
       select( -race, -ethnicity)
@@ -405,13 +474,13 @@ The performance of the CDS is dependent on the size of the patient history and h
 # Additional performance metrics can be developed later.
 # logdata_messages has the timings for apply
 
-apply_summary <- round(summary(logdata_messages$cdsApplyTime)/1000,1)
+apply_summary <- round(summary(logdata_messages$cdsApplyTime/1000),1)
 apply_tbl <- tibble(col=c("Min","1st Quartile","Mean","3rd Quartile","Max"),
                     val=c(apply_summary[1],
                           apply_summary[2],
-                          apply_summary[3],
                           apply_summary[4],
-                          apply_summary[5])
+                          apply_summary[5],
+                          apply_summary[6])
 )
 kable(apply_tbl, col.names = c("Value","Time (sec)"), align='l', caption="<h1>CDS Apply Time</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
@@ -465,11 +534,13 @@ logdata_pathways <-tidyjson::as_tibble(
       spread_values(age = jinteger('patientInfo','age')) %>%
       enter_object(payload) %>%
         spread_values(
+          mgmt_hasRecommendation = jstring('ManagementLibrary','HasRecommendation'),
           mgmt_recommendation = jstring('ManagementLibrary','DecisionAids','recommendation'),
           mgmt_recommendationDate = jstring('ManagementLibrary','DecisionAids','recommendationDate'),
           mgmt_recommendationGroup = jstring('ManagementLibrary','DecisionAids','recommendationGroup')
         )  %>%
         spread_values(
+          scrn_hasRecommendation = jstring('ScreeningLibrary','HasRecommendation'),
           scrn_recommendation = jstring('ScreeningLibrary','DecisionAids','recommendation'),
           scrn_recommendationDate = jstring('ScreeningLibrary','DecisionAids','recommendationDate'),
           scrn_recommendationGroup = jstring('ScreeningLibrary','DecisionAids','recommendationGroup')
@@ -479,8 +550,10 @@ logdata_pathways <-tidyjson::as_tibble(
         scrn_recommendationDate = date(scrn_recommendationDate)) %>%
   select(-document.id)  
 ) %>%
-  left_join(logdata_messages, by='id') # Add columns which have toggle status and timings 
+  left_join(logdata_messages, by='id') %>% # Add columns which have toggle status and timings 
+  arrange(desc(timeRequestSent))
 
+# all 'default' entries for all patients
 logdata_pathways_notoggle <- logdata_pathways %>%
   filter(!isToggleChanged)
 
@@ -500,7 +573,7 @@ rec_counts$recs_def <- nrow(logdata_pathways_notoggle)
 # They will have both a screening recommendation and a management
 # recommendation, but the screening one 'wins'
 management_recs_all_tbl <- logdata_pathways %>%
-  filter(!is.na(mgmt_recommendation), is.na(scrn_recommendation)) %>%
+  filter(mgmt_hasRecommendation == TRUE, scrn_hasRecommendation == FALSE) %>%
   select(-scrn_recommendation, -scrn_recommendationDate, -scrn_recommendationGroup)
 
 rec_counts$mgmt_recs_all <- nrow(management_recs_all_tbl)
@@ -518,7 +591,7 @@ rec_counts$mgmt_recs_def <- nrow(management_recs_notoggle_tbl)
 # Note it is possible to have a screening recommendation AND a management recommendation
 # if the patient is symptomatic. 
 screening_recs_all_tbl <- logdata_pathways %>%
-  filter(!is.na(scrn_recommendation))
+  filter(mgmt_hasRecommendation == FALSE, scrn_hasRecommendation == TRUE)
 
 screening_recs_notoggle_tbl <- screening_recs_all_tbl %>%
   filter(!isToggleChanged)
@@ -602,7 +675,7 @@ if (nrow(screening_under30_by_patient) > 0)  {
   kable(screening_under30_by_type,  align='l', col.names = c('Recommendation',  'Group','Patient Count'), caption="<h1>Under 30 Screening Recommendations (Unique Patients)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)  
   } else {
-  cat("No patients under 30 were found")
+  cat("No patients under 30 received a screening recommendation.")
 }
 ```
 
@@ -647,7 +720,20 @@ management_data_common <-tidyjson::as_tibble(
     spread_values(id = jstring(id)) %>% 
     enter_object(message) %>%
       enter_object(payload,ManageCommonAbnormality) %>%
-        spread_all(recursive = FALSE)
+        spread_all(recursive = FALSE) %>%
+        mutate(DateOfMostRecentHpvReport = date(DateOfMostRecentHpvReport),
+               DateOfMostRecentPositiveScreeningResult = date(DateOfMostRecentPositiveScreeningResult))
+)
+
+# In the Risk Tables, there are management recommendations which are not associated with specific risk estimates.
+# For coding purposes, these are represented as -1 in the lookup tables used by the CDS. We'll need to replace these with "NA"
+management_data_relevant_row <-tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id)) %>% 
+    enter_object(message) %>%
+      enter_object(payload,ManageCommonAbnormality,RelevantRow) %>%
+        spread_all(recursive = FALSE) %>%
+        mutate(riskNow = na_if(riskNow, -1), risk5yr = na_if(risk5yr, -1))
 )
 
 management_data_rare <-tidyjson::as_tibble(
@@ -670,7 +756,11 @@ management_data_collate <-tidyjson::as_tibble(
     spread_values(id = jstring(id)) %>% 
     enter_object(message) %>%
       enter_object(payload,CollateManagementData) %>%
-        spread_all(recursive = FALSE)
+        spread_all(recursive = FALSE) %>%
+        mutate(MostRecentBiopsyReportDate = date(MostRecentBiopsyReportDate),
+               MostRecentCytologyReportDate = date(MostRecentCytologyReportDate),
+               DateOfFirstBiopsyAfterMostRecentHpvReport = date(DateOfFirstBiopsyAfterMostRecentHpvReport),
+               DateOfMostRecentCytologyBeforeBiopsy = date(DateOfMostRecentCytologyBeforeBiopsy))
 )
 # Join 'em up!
 management_data_all <- management_recs_all_tbl %>%
@@ -715,16 +805,40 @@ kable(management_rec_group_tbl,  align='l', col.names = c('Recommendation',  'Gr
   kable_styling(bootstrap_options = c("striped"), full_width = T)
 ```
 
+## Special Population Recommendations
+
+The CDS pathway for special populations include guideline recommendations for several different groups of patients. These recommendations are given priority over other possible recommendations.
+
+```{r special-populations}
+# What is the count of recommendations by population group?
+special_population_groups <- c("Patients with Histologic Cancer","Patients Younger than 25","Pregnant Patients","Immunosuppressed Patients","Managing Patients After Hysterectomy")
+# Get the list of special population recommendations non-toggle. This is just the count of how many times the CDS activated a special population recommendation. Can this be filtered
+# to the most recent log entry per patient per day?
+# Then add in the immunosuppressed and pregnant toggle recommendations. This is just the count of how many times the CDS triggered the recommendation based on the toggle.
+# Then just filter to the Most Recent unique patient entry. This is the 'current' recommendation from special population.
+# Show by WhichPopulationMadeTheRecommendation with sub-group counts.
+```
+
+
 
 ## Risk Table Recommendations
 
 The recommendations generated in the Common Abnormality pathway includes those produced by the Risk Tables. We can count the times a recommendation was produced from the Risk Tables. This is a specific subset of Management guidelines, and does not represent the full scope of possible recommendations. 
 
 ```{r}
-
+# Table 3 Row lookup does not return referring HPV and Cytology as result, so we coalesce columns for this.
+# Note management patients receiving a management recommendation should receieve a valid
+# risk table recommendation.
+# Select distinct log entries for a patientReference, recommendation date, recommendation and group. 
+# Filter out hysterectomy and immunosuppressed recommendations which supercede risk tables
 management_risk_table_recs <- management_data_all |>
-  filter(Pathway == "Common Abnormality", !is.na(WhichTableMadeTheRecommendation)) |>
-  group_by(TableRecommendation)
+  filter(!is.na(WhichTableMadeTheRecommendation), mgmt_recommendation != "Hysterectomy", mgmt_recommendationGroup != "Immunosuppressed (K.3)") |>
+  distinct(patientReference,mgmt_recommendationDate,mgmt_recommendation,mgmt_recommendationGroup, .keep_all = TRUE) %>%
+  left_join(management_data_relevant_row) %>%
+  left_join(management_data_collate) %>%
+  mutate(risk_table_cyto = ifelse(cyto=="",ReferringCytologyResult,cyto)) %>%
+  mutate(risk_table_hpv = ifelse(hpv=="",ReferringHpvResult,hpv))
+
 
 management_risk_table_recs_plot <- management_risk_table_recs %>% ggplot(aes(x=TableRecommendation)) +
   ggtitle("Risk Table Recommendations") +
@@ -734,16 +848,142 @@ management_risk_table_recs_plot <- management_risk_table_recs %>% ggplot(aes(x=T
 
 management_risk_table_recs_plot
 ```
+
 ```{r risk-tables-table}
 management_risk_group_tbl <- management_risk_table_recs %>%
-  group_by(mgmt_recommendation,mgmt_recommendationGroup) %>%
-  summarize(Count = n()) %>% 
-  arrange(mgmt_recommendation, desc(Count))
+  group_by(TableRecommendation,mgmt_recommendationGroup) %>%
+  summarize(count = n()) %>% 
+  mutate(percent = percent(count / nrow(management_risk_table_recs))) %>%
+  arrange(TableRecommendation, desc(count))
 
 management_risk_group_tbl <- janitor::adorn_totals(management_risk_group_tbl, where="row")
 
-kable(management_risk_group_tbl,  align='l', col.names = c('Recommendation','Group','Count'), caption="<h1>Risk Table Recommendation Counts</h1>") %>%
+kable(management_risk_group_tbl,  align='l', col.names = c('Recommendation','Group','Count','Percent'), caption="<h1>Risk Table Recommendation Counts</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T)
+```
+
+# Most Recent Cytology and HPV for Risk Table Recommendations
+The risk table-based recommendations are based on current HPV and Cytology results. 
+For patients who received a recommendation from the risk tables, what was their most recent cytology and HPV results?
+
+```{r}
+risk_table_cyto <- management_risk_table_recs %>%
+#  ungroup() %>%
+  count(cyto, name="count") %>%
+  mutate(percent = percent(count / nrow(management_risk_table_recs))) %>%
+  rename(result = cyto)
+risk_table_cyto[risk_table_cyto$result == "ALL",1] <- "No Result"
+risk_table_cyto[risk_table_cyto$result == "",1] <- "No Result"
+
+
+risk_table_hpv <- management_risk_table_recs %>%
+  # ungroup() %>%
+  count(hpv, name="count") %>%
+  mutate(percent = percent(count / nrow(management_risk_table_recs))) %>%
+  rename(result = hpv)
+risk_table_hpv[risk_table_hpv$result == "ALL",1] <- "No Result"
+risk_table_hpv[risk_table_hpv$result == "",1] <- "No Result"
+all_risk_table <- tibble(
+  result = c("All Results"),
+  count = nrow(management_risk_table_recs),
+  percent = percent(1)
+)
+risk_table_cyto_hpv_summary <-  bind_rows(all_risk_table, risk_table_cyto, risk_table_hpv)
+kable(risk_table_cyto_hpv_summary,  col.names = c("Result","Count","%"), align='l', caption="<h1>Current Cytology and HPV Results</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("All Results", 1, 1) %>%
+  group_rows("By Cytology Result", 2, 1+nrow(risk_table_cyto)) %>%
+  group_rows("By HPV Result", 2+nrow(risk_table_cyto), 1+nrow(risk_table_cyto)+nrow(risk_table_hpv))
+
+```
+
+# Most Recent Biopsy for Risk Table Recommendations
+Risk Table recommendations are also computed based on the patient's most recent biopsy, or a history of having been treated for CIN2 or CIN3. 
+This summarizes the most recent and second most recent biopsy results for patients who received a risk table recommendation.
+
+```{r biopsy-table-3}
+risk_table_most_recent_biopsy_count <- management_risk_table_recs %>%
+  count(MostRecentBiopsyResult, name="count") %>%
+  mutate(percent = percent(count / nrow(management_risk_table_recs))) %>%
+  rename(result = MostRecentBiopsyResult)
+risk_table_most_recent_biopsy_count[is.na(risk_table_most_recent_biopsy_count$result),1] <- "No Result"
+risk_table_most_recent_biopsy_count[risk_table_most_recent_biopsy_count$result == "UNK",1] <- "Unknown"
+
+
+risk_table_second_most_recent_biopsy_count <- management_risk_table_recs %>%
+  count(SecondMostRecentBiopsyResult, name="count") %>%
+  mutate(percent = percent(count / nrow(management_risk_table_recs))) %>%
+  rename(result = SecondMostRecentBiopsyResult)
+risk_table_second_most_recent_biopsy_count[is.na(risk_table_second_most_recent_biopsy_count$result),1] <- "No Result"
+risk_table_second_most_recent_biopsy_count[risk_table_second_most_recent_biopsy_count$result == "UNK",1] <- "Unknown"
+all_risk_table <- tibble(
+  result = c("All Results"),
+  count = nrow(management_risk_table_recs),
+  percent = percent(1)
+)
+risk_table_biopsy_summary <-  bind_rows(all_risk_table,risk_table_most_recent_biopsy_count,risk_table_second_most_recent_biopsy_count)
+kable(risk_table_biopsy_summary,  col.names = c("Result","Count","%"), align='l', caption="<h1>Biopsy Results</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  group_rows("Most Recent Biopsy Result", 2, 1+nrow(risk_table_most_recent_biopsy_count)) %>%
+  group_rows("Second Most Recent Biopsy Result", 2+nrow(risk_table_most_recent_biopsy_count), 1+nrow(risk_table_most_recent_biopsy_count)+nrow(risk_table_second_most_recent_biopsy_count))
+```
+
+# Risk Table Recommendations by Immediate CIN3+ Risk
+Risk Table recommendations are based on the estimated CIN3+ risk. If the risk is 4% or greater, immediate management via colposcopy or treatment is indicated. If the immediate risk is less
+than 4%, the 5-year CIN 3+ risk is examined to determine whether patients should return in 1, 3, or 5 years.
+If the immedaite risk for CIN 3+ is 60% or greater, expedited treatment without confirmatory biopsy is recommended.
+
+```{r cin3-risk-immediate}
+risk_table_risk_summary <- management_risk_table_recs %>% filter(WhichTableMadeTheRecommendation != 3) %>%
+  group_by(action, riskNow, risk5yr) %>% count() %>%
+  mutate(percent = percent(n / nrow(management_risk_table_recs)))
+
+kable(risk_table_risk_summary,  col.names = c("Recommendation","CIN 3+ Immediate Risk %", "CIN 3+ 5yr Risk %", "Count","%"), align='l', caption="<h1>CIN 3+ Risks by Recommended Action</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) 
+
+```
+
+# Risk Estimates for Colposcopy/Biopsy Result
+The evaluation of a biopsy result is made using the recommended management action from Table 3 of the Risk Estimates for Consensus Guidelines.
+Current biopsy results of CIN2 or greater are not associated with specific risk estimates.
+```{r cin3-risk-biopsy}
+
+risk_table_biopsy_risk_summary <- management_risk_table_recs %>%
+  filter(WhichTableMadeTheRecommendation == 3) %>%
+  group_by(action, riskNow, risk5yr) %>%
+  count(name="count") %>%
+  ungroup() %>%
+  mutate(percent = percent(count / sum(count), accuracy = 0.1))
+# risk_table_biopsy_risk_summary
+
+kable(risk_table_biopsy_risk_summary,  col.names = c("Recommendation","CIN 3+ 1yr Risk %", "CIN 3+ 5yr Risk %", "Count","%"), align='l', caption="<h1>CIN 3+ Risks by Recommended Action for Biopsy Results</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) 
+
+```
+# Expedited Treatment
+What are the histology, HPV and cytology results associated with patients who received a recommendation for expedited treatment?
+
+```{r expedited-treatment}
+# Table 3 recommendations for expedited treatment for CIN2, CIN3, AIS, Cancer
+
+expedited_treatment_table3 <- management_risk_table_recs %>%
+  filter(action == "Treatment", WhichTableMadeTheRecommendation == 3) %>%
+  select(id,patientReference,timeRequestSent,mgmt_recommendation,mgmt_recommendationGroup,WhichTableMadeTheRecommendation,TableRecommendation,action,risk_table_cyto,risk_table_hpv,biopsy,riskNow,risk5yr) %>%
+  group_by(result = biopsy,riskNow,risk5yr) %>%
+  summarize(count = n()) %>% ungroup()
+# Table 1 recommendation for expedited treatment for HPV16+/HSIL+
+expedited_treatment_table1 <- management_risk_table_recs %>%
+  filter(action == "Treatment", WhichTableMadeTheRecommendation == 1) %>%
+  select(id,patientReference,timeRequestSent,mgmt_recommendation,mgmt_recommendationGroup,WhichTableMadeTheRecommendation,TableRecommendation,action,risk_table_cyto,risk_table_hpv,biopsy,riskNow,risk5yr) %>%
+  unite(result, risk_table_hpv, risk_table_cyto, sep = "/", remove = FALSE) %>%
+  group_by(result,riskNow,risk5yr) %>%
+  summarize(count = n()) %>% ungroup()
+
+expedited_treatment_summary <- rbind(expedited_treatment_table3, expedited_treatment_table1) %>%
+  mutate(percent = percent(count / sum(count), accuracy = 0.1))
+
+kable(expedited_treatment_summary,  col.names = c("Result", "CIN 3+ Immediate Risk %", "CIN 3+ 5yr Risk %","Count","%"), align='l', caption="<h1>Diagnostic Results for Expedited Treatment</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) 
 ```
 
 ```{r}
@@ -757,6 +997,15 @@ management_data_any_cyto_ascus <-tidyjson::as_tibble(
         enter_object(AnyCytologyInterpretedAsAscusOrAbove) %>%
         gather_array %>%
         spread_all
+)
+
+biopsy_dates <- as_tibble (
+  logdata %>%
+    spread_values(id = jstring(id)) %>%
+      enter_object(message,payload,CollateManagementData) %>%
+        enter_object(BiopsyDates) %>%
+          gather_array() %>% append_values_string(column.name = "BiopsyDate")
+
 )
 ```
 
@@ -774,7 +1023,7 @@ cotest_cols <- c("Age Group" = "age_group","Most Recent Cytology Cotest Result" 
 cotest_results_tbl <- logdata_pathways_notoggle %>%
   left_join(management_data_collate) %>% 
   select(id,patientReference,age,MostRecentCytologyCotestResult,MostRecentHpvResult) %>%
-  mutate(age_group = cut(age, breaks=c(0,20,24,29,65,120), labels=c("Under 21","21 to 25","26 to 29","30 to 65","Over 65")))
+  mutate(age_group = cut(age, breaks=c(0,19,24,29,65,120), labels=c("Under 20","20 to 24","25 to 29","30 to 65","Over 65")))
 
 
 # cotest_results_pivot_tbl <- cotest_results_tbl %>%
@@ -797,3 +1046,61 @@ kable(cotest_results_age_group %>% rename(any_of(cotest_cols)),
 
 ```
     
+## Days to Biopsy
+What is the mean number of days between a patient's most recent HPV, Cytology or cotest and the first biopsy (histology) result after that?
+
+This is a complex metric, as there are many possible reasons for a biopsy to occur, and patient histories in the real world are often 'irregular' and may include gaps and missing tests. A patient may have a cotest result of "HPV-negative / NILM" and still have a biopsy performed for other reasons. 
+This table will be based on the following conditions:
+
+- A patient has received a biopsy after an HPV, Cytology (Pap) or cotest result. 
+- The biopsy occurs after the most recent HPV, Cytology or cotest result.
+- If there are multiple biopsies after the most recent HPV, Cytology or cotest result, we will look at the first one (oldest) that occurred after the HPV, Cytology or cotest result.
+- This only looks at the most recent test-biopsy pair - it does not compute older intervals for past biopsies. 
+- The biopsy must have occurred within the BiopsyReferralPeriod, currently within 1 year after the test result.
+- It isn't measuring the time of the colposcopic procedure, only the time of the next immediate histology result. 
+
+This table does not consider the result of the biopsy, or what may follow it. It is simply trying to count the days between the most recent test and the biopsy which followed.
+
+```{r days-to-biopsy}
+# Table 1 - Biopsy AFTER most recent cotest
+
+biopsy_days_after_referring_test <- logdata_pathways_notoggle %>%
+  left_join(management_data_collate) %>%
+  left_join(management_data_common)  %>%
+  filter(MostRecentBiopsyReportDate > MostRecentCytologyReportDate | MostRecentBiopsyReportDate > DateOfMostRecentHpvReport) %>%
+  distinct(MostRecentBiopsyReportDate, .keep_all = TRUE) %>%
+  filter(!(ReferringCytologyResult == "ALL" & ReferringHpvResult == "ALL")) %>%
+  select(id,patientReference,timeRequestSent,ReferringCytologyResult,ReferringHpvResult,MostRecentBiopsyReportDate,MostRecentCytologyReportDate,DateOfMostRecentCytologyBeforeBiopsy,DateOfMostRecentHpvReport,DateOfFirstBiopsyAfterMostRecentHpvReport) %>%
+  mutate(daysToBiopsy = as.numeric(difftime(coalesce(DateOfFirstBiopsyAfterMostRecentHpvReport,MostRecentBiopsyReportDate), coalesce(DateOfMostRecentCytologyBeforeBiopsy,DateOfMostRecentHpvReport), units = c("days"))))
+
+biopsy_days_cyto_summary <- biopsy_days_after_referring_test %>%
+  group_by(ReferringCytologyResult) %>%
+  summarize(days = round2str(mean(daysToBiopsy)), count = n(), percent = percent(count/nrow(biopsy_days_after_referring_test), accuracy = 0.1)) %>%
+  rename("Result" = "ReferringCytologyResult") %>%
+  arrange(factor(Result, levels = c("ALL","NILM","ASC-US","LSIL","ASC-H","AGC","HSIL+")))
+biopsy_days_cyto_summary[biopsy_days_cyto_summary$Result == "ALL",1] <- "Unknown/Missing"
+
+biopsy_days_hpv_summary <- biopsy_days_after_referring_test %>%
+  group_by(ReferringHpvResult) %>%
+  summarize(days = round2str(mean(daysToBiopsy)), count = n(), percent = percent(count/nrow(biopsy_days_after_referring_test), accuracy = 0.1)) %>%
+  rename("Result" = "ReferringHpvResult")
+biopsy_days_hpv_summary[biopsy_days_hpv_summary$Result == "ALL",1] <- "Unknown/Missing"
+
+mean_all_biopsy_days <- tibble(
+  Result = c("All Results"),
+  days = c(round2str(mean(biopsy_days_after_referring_test$daysToBiopsy))),
+  count = nrow(biopsy_days_after_referring_test),
+  percent = percent(1)
+)
+
+
+biopsy_days_summary <-  bind_rows(mean_all_biopsy_days,biopsy_days_cyto_summary, biopsy_days_hpv_summary)
+
+kable(biopsy_days_summary,  col.names = c("Result","Days","Count","%"), align='l',caption="<h1>Mean Days to Biopsy</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("All Results", 1, 1) %>%
+  group_rows("By Cytology Result", 2, 1+nrow(biopsy_days_cyto_summary)) %>%
+  group_rows("By HPV Result", 2+nrow(biopsy_days_cyto_summary), 1+nrow(biopsy_days_cyto_summary)+nrow(biopsy_days_hpv_summary))
+```
+
+# 
