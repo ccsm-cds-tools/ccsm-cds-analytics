@@ -11,6 +11,7 @@ cql_parameters <- list(
   AbnormalTestLookbackPeriod = years(8),
   AllowGradeDExclusion = true,
   AllowGradeDRecommendation = true,
+  Analytics = true,
   BiopsyLookbackPeriod = years(25),
   BiopsyReferralPeriod = years(1),
   BirthdayThreshold = ymd('1980-01-01'),
@@ -29,6 +30,7 @@ cql_parameters <- list(
   MedicationLookbackPeriod = months(6),
   MinimumScreeningAge = years(21),
   PrimaryHpvTestingCadence = years(5),
+  QuestionnaireUrl = 'http://OUR-PLACEHOLDER-URL.com/Questionnaire/ProvideMoreInformation',
   RarelyScreenedGracePeriod = months(6),
   SymptomaticLookBack = days(1)
 )
