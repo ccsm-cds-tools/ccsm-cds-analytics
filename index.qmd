@@ -5,7 +5,7 @@ date-format: D MMMM YYYY
 format: html
 editor: source
 author: Michael Nosal (mnosal@mitre.org)
-version: 0.2
+version: 0.2.1
 ---
 
 ```{r setup, include=FALSE}
@@ -327,15 +327,25 @@ logdata_relevant_row <-tidyjson::as_tibble(
         mutate(riskNow = na_if(riskNow, -1), risk5yr = na_if(risk5yr, -1))
 )
 
+# Some date values may be recorded as year only
+# We want to separate these entries out for special handling later
+# We'll create a new column for those that have only a year value
 logdata_rare_abnormality <-tidyjson::as_tibble(
   logdata %>%
     spread_values(id = jstring(id)) %>% 
     enter_object(message) %>%
       enter_object(payload,ManageRareAbnormality) %>%
         spread_all(recursive = FALSE) %>%
-    mutate(MostRecentTreatmentDate = date(MostRecentTreatmentDate),
-           DateOfLastKnownCytologyInterpretedAsAscHInPast5Years = date(DateOfLastKnownCytologyInterpretedAsAscHInPast5Years),
-           TreatmentForHighGradeHistologyOrCytologyDate = date(TreatmentForHighGradeHistologyOrCytologyDate))
+        mutate(
+          temp_MostRecentTreatmentDate = as.Date(MostRecentTreatmentDate),
+          MostRecentTreatmentYear = ifelse(is.na(temp_MostRecentTreatmentDate), MostRecentTreatmentDate, NA),
+          MostRecentTreatmentDate = temp_MostRecentTreatmentDate,
+          temp_TreatmentForHighGradeHistologyOrCytologyDate = as.Date(TreatmentForHighGradeHistologyOrCytologyDate),
+          TreatmentForHighGradeHistologyOrCytologyYear = ifelse(is.na(temp_TreatmentForHighGradeHistologyOrCytologyDate), TreatmentForHighGradeHistologyOrCytologyDate, NA),
+          TreatmentForHighGradeHistologyOrCytologyDate = temp_TreatmentForHighGradeHistologyOrCytologyDate,
+          DateOfLastKnownCytologyInterpretedAsAscHInPast5Years = date(DateOfLastKnownCytologyInterpretedAsAscHInPast5Years),
+        ) %>%
+        select(-temp_MostRecentTreatmentDate, -temp_TreatmentForHighGradeHistologyOrCytologyDate)
 )
 
 logdata_special_population <-tidyjson::as_tibble(
@@ -367,9 +377,12 @@ logdata_collate <-tidyjson::as_tibble(
                DateOfFirstBiopsyAfterMostRecentHpvReport = date(DateOfFirstBiopsyAfterMostRecentHpvReport),
                DateOfMostRecentCytologyBeforeBiopsy = date(DateOfMostRecentCytologyBeforeBiopsy),
                DateOfMostRecentReport = date(DateOfMostRecentReport),
-               DateOfLastCervicalPrecancerTreatment = date(DateOfLastCervicalPrecancerTreatment),
+               temp_DateOfLastCervicalPrecancerTreatment = as.Date(DateOfLastCervicalPrecancerTreatment),
+               DateOfLastCervicalPrecancerTreatmentYear = ifelse(is.na(temp_DateOfLastCervicalPrecancerTreatment), DateOfLastCervicalPrecancerTreatment, NA),
+               DateOfLastCervicalPrecancerTreatment = temp_DateOfLastCervicalPrecancerTreatment,
                MostRecentCin2orCin3BiopsyDate = date(MostRecentCin2orCin3BiopsyDate),
-               )
+               ) %>%
+        select(-temp_DateOfLastCervicalPrecancerTreatment)
 )
 
 
@@ -665,8 +678,10 @@ current_patient_log_dates <- logdata_pathways_notoggle |>
   mutate(MostRecentHpvDate = coalesce(DateOfMostRecentHpvReport,coalesce(DateOfMostRecentPositiveHpv,DateOfMostRecentNegativeHpv))) %>%
   # We need to recompute MostRecentHpvReportWasWithinPastFiveYears for earlier log entries which did not include this variable
   mutate(MostRecentHpvReportWasWithinPastFiveYears = ifelse(today() - MostRecentHpvDate < years(5), TRUE, FALSE )) %>%
+  mutate(MostRecentHpvReportWasWithinPastThreeYears = ifelse(today() - MostRecentHpvDate < years(3), TRUE, FALSE )) %>%
   mutate(MostRecentHpvReportWasWithinPastYear = ifelse(today() - MostRecentHpvDate < years(1), TRUE, FALSE )) %>%
   mutate(MostRecentCytologyReportWasWithinPastYear = ifelse(today() - MostRecentCytologyReportDate < years(1), TRUE, FALSE)) %>%
+  mutate(MostRecentCytologyReportWasWithinPastThreeYears = ifelse(today() - MostRecentCytologyReportDate < years(3), TRUE, FALSE)) %>%
   # DateOfMostRecentPositiveScreeningResult coalesces CytologyInterpretedAsAscusOrAbove and HpvInterpretedAsPositive, the same way that
   # MostRecentScreeningResultIsPositive does, so we can use it as a proxy for log entries which did not have this value originally.
   mutate(MostRecentScreeningResultIsPositive = ifelse(!is.na(DateOfMostRecentPositiveScreeningResult), TRUE, FALSE)) %>%
@@ -745,6 +760,11 @@ These tables summarize patients' most recent HPV test, if it occurred in the pas
 - **Mean Days Since HPV (+) Positive**: average number of days since the last known HPV (+) Positive result, even if older than 1 or 5 years
 - **Mean Days Since HPV(-) Negative**: average number of days since the last known HPV (-) Negative result, evan if older than 1 or 5 years
 - **NA**: indicates no HPV report was found in the history
+
+Note: **HPV-positive** here refers to _any_ positive HPV result. The CCSM CDS evaluates HPV results as the first of:
+- HPV16+
+- HPV16-, 18+
+- HPV-positive (other): includes untyped HPV and other high risk HPV genotypes besides 16, 18
 
 
 ```{r hpv-days-past5}
