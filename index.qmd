@@ -385,7 +385,16 @@ logdata_collate <-tidyjson::as_tibble(
         select(-temp_DateOfLastCervicalPrecancerTreatment)
 )
 
+logdata_hpv_dates <- as_tibble (
+  logdata %>%
+    spread_values(id = jstring(id)) %>%
+      enter_object(message,payload,CollateManagementData) %>%
+        enter_object(HpvDates) %>%
+          gather_array() %>% append_values_string(column.name = "HpvDate") %>%
+    mutate(HpvDate = as.Date(HpvDate))
+          
 
+)
 ```
 
 ## Patient Demographic Information
@@ -709,43 +718,38 @@ Note this may count individual patients more than once, if the same patient has 
 These tables summarize patients' most recent cytology test, if it occurred in the past 5 years and the past year.
 
 - **Mean Days**: average number of days since the most recent cytology result
-- **Mean Days Since NILM**: average number of days since the last known NILM cytology, even if older than 1 or 5 years
-- **Mean Days Since ≥ ASC-US**: average number of days since the last known cytology result of ASC-US or worse, evan if older than 1 or 5 years
+- **Mean Days Since NILM**: average number of days since the last known NILM cytology, even if older than 1, 3 or 5 years
+- **Mean Days Since ≥ ASC-US**: average number of days since the last known cytology result of ASC-US or worse, evan if older than 1, 3 or 5 years
 - **NA**: indicates no cytology was found in the history
 
 ```{r cyto-days-past5}
-
 recent_days_cyto_summary <- current_patient_log_dates %>%
-  group_by(MostRecentCytologyReportWasWithinPastFiveYears) %>%
+  pivot_longer(cols = contains("MostRecentCytologyReportWasWithin"),
+    names_to = "group_year",
+    values_to = "included") %>%
+  group_by(group_year, included) %>%
   summarize(count = n(), 
             mean_days = round(mean(days_since_cytology, na.rm = TRUE),0),
             mean_nilm_days = round(mean(days_since_cyto_nilm, na.rm = TRUE),0),
             mean_ascus_days = round(mean(days_since_cyto_ascus_above, na.rm = TRUE),0)) %>%
   mutate_all(~ifelse(is.nan(.), NA, .)) %>%
   mutate(percent = percent(count / sum(count), accuracy = 0.1)) %>%
-  select(MostRecentCytologyReportWasWithinPastFiveYears,count,percent,mean_days,mean_nilm_days,mean_ascus_days)
+  select(included, count, percent, mean_days, mean_nilm_days, mean_ascus_days) %>%
+  mutate(report = case_when(
+    group_year == "MostRecentCytologyReportWasWithinPastFiveYears" ~ "In Past 5 Years",
+    group_year == "MostRecentCytologyReportWasWithinPastThreeYears" ~ "In Past 3 Years",
+    group_year == "MostRecentCytologyReportWasWithinPastYear" ~ "In Past Year"
+    )) %>%
+  filter((group_year == "MostRecentCytologyReportWasWithinPastFiveYears" & !is.na(included)) |
+         (group_year == "MostRecentCytologyReportWasWithinPastThreeYears" & !is.na(included)) |
+          group_year == "MostRecentCytologyReportWasWithinPastYear") %>%
+  mutate(report = if_else(group_year == "MostRecentCytologyReportWasWithinPastYear" & is.na(included),"Had No Cytology Report",report)) %>%
+  ungroup() %>%
+  select(report,included,count,percent,mean_days,mean_nilm_days,mean_ascus_days)
+  
 
 
-kable(recent_days_cyto_summary, col.names = c("Had Cytology in Past 5 Years","Count","Percent","Mean Days","Mean Days Since NILM","Mean Days Since ≥ ASC-US"), align='l', caption="<h1>Most Recent Cytology (Past 5 Years)</h1>") %>%
-    kable_styling(bootstrap_options = c("striped"), full_width = T)
-```
-
-
-
-```{r cyto-days-past-year}
-
-recent_days_cyto_summary <- current_patient_log_dates %>%
-  group_by(MostRecentCytologyReportWasWithinPastYear) %>%
-  summarize(count = n(), 
-            mean_days       = round(mean(days_since_cytology, na.rm = TRUE), 0),
-            mean_nilm_days  = round(mean(days_since_cyto_nilm, na.rm = TRUE), 0),
-            mean_ascus_days = round(mean(days_since_cyto_ascus_above, na.rm = TRUE), 0)) %>%
-  mutate_all(~ifelse(is.nan(.), NA, .)) %>%
-  mutate(percent = percent(count / sum(count), accuracy = 0.1)) %>%
-  select(MostRecentCytologyReportWasWithinPastYear,count,percent,mean_days,mean_nilm_days,mean_ascus_days)
-
-
-kable(recent_days_cyto_summary, col.names = c("Had Cytology in Past Year","Count","Percent","Mean Days","Mean Days Since NILM","Mean Days Since ≥ ASC-US"), align='l', caption="<h1>Most Recent Cytology (Past Year)</h1>") %>%
+kable(recent_days_cyto_summary, col.names = c("Cytology Report Time","Had Test","Count","Percent","Mean Days","Mean Days Since NILM","Mean Days Since ≥ ASC-US"), align='l', caption="<h1>Most Recent Cytology</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
 ```
 
@@ -761,48 +765,39 @@ These tables summarize patients' most recent HPV test, if it occurred in the pas
 - **Mean Days Since HPV(-) Negative**: average number of days since the last known HPV (-) Negative result, evan if older than 1 or 5 years
 - **NA**: indicates no HPV report was found in the history
 
-Note: **HPV-positive** here refers to _any_ positive HPV result. The CCSM CDS evaluates HPV results as the first of:
+Note: **HPV-positive** here refers to _any_ positive HPV result. 
+
 - HPV16+
 - HPV16-, 18+
 - HPV-positive (other): includes untyped HPV and other high risk HPV genotypes besides 16, 18
 
 
-```{r hpv-days-past5}
-# HPV Report dates need finessing
-# DateOfMostRecentHpvReport is valid only for HPV Reports that are within the HPVTestingIntervalLookBack
-# which is by default 5 years + 6 months.
-# A patient's actual most recent HPV report can be older than this, but this date will be shown as null
-# Instead, we can look at DateOfMostRecentPositiveHpv, DateOfMostRecentNegativeHpv
-  
+```{r hpv-days-report-time}
 recent_days_hpv_summary <- current_patient_log_dates %>%
-  group_by(MostRecentHpvReportWasWithinPastFiveYears) %>%
+  pivot_longer(cols = contains("MostRecentHpvReportWasWithin"),
+    names_to = "group_year",
+    values_to = "included") %>%
+  group_by(group_year, included) %>%
   summarize(count = n(), 
             mean_days = round(mean(days_since_hpv, na.rm = TRUE),0),
             mean_hpv_positive_days = round(mean(days_since_hpv_positive, na.rm = TRUE),0),
             mean_hpv_negative_days = round(mean(days_since_hpv_negative, na.rm = TRUE),0)) %>%
   mutate_all(~ifelse(is.nan(.), NA, .)) %>%
   mutate(percent = percent(count / sum(count), accuracy = 0.1)) %>%
-  select(MostRecentHpvReportWasWithinPastFiveYears,count,percent,mean_days,mean_hpv_positive_days,mean_hpv_negative_days)
+  select(included, count, percent, mean_days, mean_hpv_positive_days, mean_hpv_negative_days) %>%
+  mutate(report = case_when(
+    group_year == "MostRecentHpvReportWasWithinPastFiveYears" ~ "In Past 5 Years",
+    group_year == "MostRecentHpvReportWasWithinPastThreeYears" ~ "In Past 3 Years",
+    group_year == "MostRecentHpvReportWasWithinPastYear" ~ "In Past Year"
+    )) %>%
+  filter((group_year == "MostRecentHpvReportWasWithinPastFiveYears" & !is.na(included)) |
+         (group_year == "MostRecentHpvReportWasWithinPastThreeYears" & !is.na(included)) |
+          group_year == "MostRecentHpvReportWasWithinPastYear") %>%
+  mutate(report = if_else(group_year == "MostRecentHpvReportWasWithinPastYear" & is.na(included),"Had No HPV Report",report)) %>%
+  ungroup() %>%
+  select(report, included, count, percent, mean_days, mean_hpv_positive_days, mean_hpv_negative_days)
 
-kable(recent_days_hpv_summary, col.names = c("Had HPV test in Past 5 Years","Count","Percent","Mean Days","Mean Days Since HPV (+) Positive","Mean Days Since HPV (-) Negative"), align='l', caption="<h1>Most Recent HPV (Past 5 Years)</h1>") %>%
-    kable_styling(bootstrap_options = c("striped"), full_width = T)
-  
-```
-
-
-
-```{r hpv-days-past-year}
-recent_days_hpv_summary <- current_patient_log_dates %>%
-  group_by(MostRecentHpvReportWasWithinPastYear) %>%
-  summarize(count = n(), 
-            mean_days = round(mean(days_since_hpv, na.rm = TRUE),0),
-            mean_hpv_positive_days = round(mean(days_since_hpv_positive, na.rm = TRUE),0),
-            mean_hpv_negative_days = round(mean(days_since_hpv_negative, na.rm = TRUE),0)) %>%
-  mutate_all(~ifelse(is.nan(.), NA, .)) %>%
-  mutate(percent = percent(count / sum(count), accuracy = 0.1)) %>%
-  select(MostRecentHpvReportWasWithinPastYear,count,percent,mean_days,mean_hpv_positive_days,mean_hpv_negative_days)
-
-kable(recent_days_hpv_summary, col.names = c("Had HPV test in Past Year","Count","Percent","Mean Days","Mean Days Since HPV (+) Positive","Mean Days Since HPV (-) Negative"), align='l', caption="<h1>Most Recent HPV (Past Year)</h1>") %>%
+kable(recent_days_hpv_summary, col.names = c("HPV Report Time","Had Test","Count","Percent","Mean Days","Mean Days Since Last HPV (+) Positive","Mean Days Since Last HPV (-) Negative"), align='l', caption="<h1>Most Recent HPV</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
   
 ```
@@ -833,6 +828,8 @@ recent_positive_screening_by_hpv_summary <- current_patient_log_dates %>%
   mutate(percent = percent(count / sum(count), accuracy = 0.1)) %>%
   select(result = MostRecentHpvResult,count,percent,mean_days)
 
+recent_positive_screening_by_hpv_summary[recent_positive_screening_by_hpv_summary$result == "HPV-positive",1] <- "HPV (+) Other"
+
 all_positive_screening_table <- tibble(
   result = c("All Results"),
   count = nrow(current_patient_log_dates %>% filter(MostRecentScreeningResultIsPositive, !is.na(MostRecentHpvResult),!is.na(MostRecentCytologyCotestResult))),
@@ -852,7 +849,7 @@ kable(recent_positive_screening_summary, col.names = c("Result","Count","Percent
 # Treatment within Past Year
 How many patients have had their most recent treatment within the past year?
 
-```{r}
+```{r treatment-past-year}
 # How many patients have had treatment in the past year?
 # What is the mean number of days since that treatment?
 # HasHistologicHsil =   "CIN2", "Histologic CIN3", "HSIL, Unspecified"
@@ -869,7 +866,14 @@ treatment_older_than_one_year_summary <- treatment_in_last_year %>%
 no_treatment_summary <- treatment_in_last_year %>%
   filter(is.na(MostRecentTreatmentDate)) %>%
   summarize(HasTreatmentInLastYear = "Has No Treatment", count = n(), percent = percent(count / nrow(treatment_in_last_year), accuracy = 0.1), mean_days = "NA")
-treatment_past_year_summary <- rbind(treatment_in_last_year_summary,treatment_older_than_one_year_summary,no_treatment_summary)
+
+treatment_total <- tibble(
+  HasTreatmentInLastYear = "Total",
+  count = nrow(current_patient_log_dates),
+  percent = percent(1),
+  mean_days = NA
+)
+treatment_past_year_summary <- rbind(treatment_in_last_year_summary,treatment_older_than_one_year_summary,no_treatment_summary,treatment_total)
 
 kable(treatment_past_year_summary, col.names = c("Last Treatment Was Within Past Year","Count","Percent","Mean Days Since Treatment"), align='l', caption="<h1>Most Recent Treatment Summary</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
@@ -895,20 +899,24 @@ What is the time in days from when a patient has a high grade histology result t
 
 # High Grade or Cancer Histology Results in "CIN2","Histologic CIN3","HSIL, Unspecified", "AIS", "Histologic cancer"
 
-high_grade_biopsy_treatment <-current_patient_log_dates %>% select(id,patientReference,days_since_high_grade,days_since_treatment,MostRecentTreatmentDate,HighGradeOrCancerHistologyResultsDate) %>%
+high_grade_biopsy_treatment <- current_patient_log_dates %>%
+  select(id, patientReference, days_since_high_grade, HighGradeOrCancerHistologyResultsDate, days_since_treatment, MostRecentTreatmentDate) %>%
   filter(!is.na(MostRecentTreatmentDate), !is.na(HighGradeOrCancerHistologyResultsDate), MostRecentTreatmentDate > HighGradeOrCancerHistologyResultsDate) %>%
   mutate(days_until_treatment = days_since_high_grade - days_since_treatment)
 
-high_grade_biopsy_treatment_summary <- tibble(
-  count = nrow(high_grade_biopsy_treatment),
-  mean_days = round(mean(high_grade_biopsy_treatment$days_until_treatment),0),
-  min_days   = min(high_grade_biopsy_treatment$days_until_treatment),
-  max_days   = max(high_grade_biopsy_treatment$days_until_treatment)
-)
-
-kable(high_grade_biopsy_treatment_summary, col.names = c("Count","Mean Days","Min Days","Max Days"), align='l', caption="<h1>Days from High Grade Histology to Treatment</h1>") %>%
+if (nrow(high_grade_biopsy_treatment) > 0)  {
+  high_grade_biopsy_treatment_summary <- tibble(
+    count = nrow(high_grade_biopsy_treatment),
+    mean_days = round(mean(high_grade_biopsy_treatment$days_until_treatment),0),
+    min_days   = min(high_grade_biopsy_treatment$days_until_treatment),
+    max_days   = max(high_grade_biopsy_treatment$days_until_treatment)
+  )
+  
+  kable(high_grade_biopsy_treatment_summary, col.names = c("Count","Mean Days","Min Days","Max Days"), align='l', caption="<h1>Days from High Grade Histology to Treatment</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
-
+} else {
+  cat("Unable to display high grade histology to treatment - No results found.")
+}  
 
 
 ```
@@ -1211,6 +1219,8 @@ risk_table_hpv <- management_risk_table_recs %>%
   rename(result = hpv)
 risk_table_hpv[risk_table_hpv$result == "ALL",1] <- "No Result"
 risk_table_hpv[risk_table_hpv$result == "",1] <- "No Result"
+risk_table_hpv[risk_table_hpv$result == "HPV-positive", 1] <- "HPV (+) Other"
+
 all_risk_table <- tibble(
   result = c("All Results"),
   count = nrow(management_risk_table_recs),
@@ -1324,7 +1334,7 @@ kable(expedited_treatment_summary,  col.names = c("Result", "CIN 3+ Immediate Ri
 
 # Get unique patient default entries (no toggle switches applied)
 # And add collate data (which includes MostRecentCytologyCotestResult and MostRecentHpvResult)
-cotest_cols <- c("Age Group" = "age_group","Most Recent Cytology Cotest Result" = "MostRecentCytologyCotestResult","HPV-" = "HPV-negative","HPV+" = "HPV-positive","HPV16+" = "HPV16+","HPV16-/18+" = "HPV16-, HPV18+","Unknown"="UNK","N/A"="<NA>")
+cotest_cols <- c("Age Group" = "age_group","Most Recent Cytology Cotest Result" = "MostRecentCytologyCotestResult","HPV-" = "HPV-negative","HPV+ Other" = "HPV-positive","HPV16+" = "HPV16+","HPV16-/18+" = "HPV16-, HPV18+","Unknown"="UNK","N/A"="<NA>")
 cotest_results_tbl <- logdata_pathways_notoggle %>%
   left_join(logdata_collate) %>% 
   select(id,patientReference,age,MostRecentCytologyCotestResult,MostRecentHpvResult) %>%
@@ -1390,6 +1400,7 @@ biopsy_days_hpv_summary <- biopsy_days_after_referring_test %>%
   summarize(days = round2str(mean(daysToBiopsy)), count = n(), percent = percent(count/nrow(biopsy_days_after_referring_test), accuracy = 0.1)) %>%
   rename("Result" = "ReferringHpvResult")
 biopsy_days_hpv_summary[biopsy_days_hpv_summary$Result == "ALL",1] <- "Unknown/Missing"
+biopsy_days_hpv_summary[biopsy_days_hpv_summary$Result == "HPV-positive",1] <- "HPV (+) Other"
 
 mean_all_biopsy_days <- tibble(
   Result = c("All Results"),
@@ -1440,4 +1451,185 @@ kable(cin2cin3_summary,  col.names = c("Current Biopsy Result","Mean Days since 
   pack_rows("An Older Biopsy was CIN2/CIN3", 1+nrow(cin2cin3_recent_summary), nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary)) %>%
   pack_rows("CIN2/CIN3 Result at Any Time", 1+nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary), 1+nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary))
   
+```
+
+## Days Since Any Biopsy
+
+What is the average days since the most recent biopsy (any time)?
+
+```{r biopsy-days}
+has_biopsy <- current_patient_log_dates %>%
+  filter(!is.na(MostRecentBiopsyReportDate))
+
+biopsy_days <- current_patient_log_dates %>%
+  filter(!is.na(MostRecentBiopsyResult)) %>%
+  group_by(MostRecentBiopsyResult) %>%
+  summarize(mean_days = round(mean(days_since_biopsy)), count = n(), percent = percent(count/nrow(current_patient_log_dates), accuracy = 0.1))
+
+biopsy_days[biopsy_days$MostRecentBiopsyResult == "ALL",1]  <- "No Result Found"
+biopsy_days[biopsy_days$MostRecentBiopsyResult == "NULL",1] <- "No Result Code"
+biopsy_days[biopsy_days$MostRecentBiopsyResult == "UNK",1] <- "Unrecognized Test Result"
+biopsy_days <- biopsy_days %>%
+    arrange(factor(MostRecentBiopsyResult, levels = c("<CIN1","CIN1","CIN2","HSIL, Unspecified","CIN3","AIS","Cancer","Insufficient","Result Missing","Unrecognized Test Result")))
+
+no_biopsy_days <- current_patient_log_dates %>%
+  filter(is.na(MostRecentBiopsyResult)) %>%
+  group_by(MostRecentBiopsyResult) %>%
+  summarize(mean_days = round(mean(days_since_biopsy)), count = n(), percent = percent(count/nrow(current_patient_log_dates), accuracy = 0.1))
+no_biopsy_days[1,]$MostRecentBiopsyResult <- "No Biopsy in History"
+mean_all_biopsy_days <- tibble(
+  MostRecentBiopsyResult = c("Total All Biopsy Result"),
+  mean_days = round(mean(current_patient_log_dates$days_since_biopsy, na.rm = TRUE)),
+  count = nrow(has_biopsy),
+  percent = percent(nrow(has_biopsy) / nrow(current_patient_log_dates), accuracy = 0.1)
+)
+
+biopsy_days_summary <- rbind(biopsy_days,mean_all_biopsy_days,no_biopsy_days) %>%
+  select(MostRecentBiopsyResult,count,percent,mean_days)
+
+kable(biopsy_days_summary,  col.names = c("Result","Count","%","Mean Days"), align='l',caption="<h1>Mean Days Since Most Recent Biopsy</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("Most Recent Biopsy Result",1,nrow(biopsy_days))
+
+```
+
+## HPV-Negative ASC-US After History of HPV-Positive ASC-US
+
+This scenario looks at patients with the following history of persistent ASC-US:
+
+| HPV          | Cytology    | Date      | Sequence           |
+|--------------|-------------|-----------|--------------------|
+|HPV (-)       | ACS-US      | Today.    | Most Recent Cotest |
+|HPV (+) Other | ASC-US      | ~12-18 months ago | Previous Cotest |
+|HPV (+) Other | ASC-US      | ~18-36 months ago | Second Previous Cotest |
+
+The patient has a history of ASC-US (3 tests in the past ~3 years). They had prior HPV-positive results but now their current result is HPV-negative. This is a case where colposcopy was previously recommended but not completed. (cf. (2019 ASCCP Risk-Based Management Consensus Guidelines: Updates through 2023, J Low Genit Tract Dis 2024;28: 3-6), Errata Section 4)
+
+How many patients were observed with HPV-/ASC-US preceded by HPV+/ASC-US? (With no biopsy or treatment since the second most recent cotest?)
+
+```{r hpv-ascus-history}
+
+current_patient_log <- logdata_pathways_notoggle %>%
+  mutate(recommendationDate = coalesce(scrn_recommendationDate,mgmt_recommendationDate)) %>%
+  distinct(patientReference, recommendationDate, .keep_all=TRUE) %>%
+  left_join(logdata_common) %>%
+  left_join(logdata_collate) %>%
+  left_join(logdata_dashboard) %>%
+  left_join(logdata_rare_abnormality)%>%
+  left_join(logdata_special_population) %>%
+  left_join((logdata_average_risk)) %>%
+  mutate(MostRecentHpvDate = coalesce(DateOfMostRecentHpvReport,coalesce(DateOfMostRecentPositiveHpv,DateOfMostRecentNegativeHpv))) %>%
+  # We need to recompute MostRecentHpvReportWasWithinPastFiveYears for earlier log entries which did not include this variable
+  mutate(MostRecentHpvReportWasWithinPastFiveYears = ifelse(today() - MostRecentHpvDate < years(5), TRUE, FALSE )) %>%
+  mutate(MostRecentHpvReportWasWithinPastThreeYears = ifelse(today() - MostRecentHpvDate < years(3), TRUE, FALSE )) %>%
+  mutate(MostRecentHpvReportWasWithinPastYear = ifelse(today() - MostRecentHpvDate < years(1), TRUE, FALSE )) %>%
+  mutate(MostRecentCytologyReportWasWithinPastYear = ifelse(today() - MostRecentCytologyReportDate < years(1), TRUE, FALSE)) %>%
+  mutate(MostRecentCytologyReportWasWithinPastThreeYears = ifelse(today() - MostRecentCytologyReportDate < years(3), TRUE, FALSE)) %>%
+  # DateOfMostRecentPositiveScreeningResult coalesces CytologyInterpretedAsAscusOrAbove and HpvInterpretedAsPositive, the same way that
+  # MostRecentScreeningResultIsPositive does, so we can use it as a proxy for log entries which did not have this value originally.
+  mutate(MostRecentScreeningResultIsPositive = ifelse(!is.na(DateOfMostRecentPositiveScreeningResult), TRUE, FALSE)) %>%
+  mutate(days_since_cytology = as.numeric(difftime(today(), MostRecentCytologyReportDate)),
+         days_since_hpv = as.numeric(difftime(today(), MostRecentHpvDate)),
+         days_since_hpv_positive = as.numeric(difftime(today(),DateOfMostRecentPositiveHpv)),
+         days_since_hpv_negative = as.numeric(difftime(today(),DateOfMostRecentNegativeHpv)),
+         days_since_cotest_negative = as.numeric(difftime(today(), DateOfMostRecentNegativeCotest)),
+         days_since_positive_screening = as.numeric(difftime(today(), DateOfMostRecentPositiveScreeningResult)),
+         days_since_cyto_nilm = as.numeric(difftime(today(), DateOfMostRecentNilmCytology)),
+         days_since_biopsy = as.numeric(difftime(today(),MostRecentBiopsyReportDate )),
+         days_since_treatment = as.numeric(difftime(today(), DateOfLastCervicalPrecancerTreatment)),
+         days_since_report = as.numeric(difftime(today(), DateOfMostRecentReport)),
+         days_since_cin2_cin3_biopsy = as.numeric(difftime(today(), MostRecentCin2orCin3BiopsyDate)),
+         days_since_cyto_ascus_above = as.numeric(difftime(today(), DateOfLastKnownCytologyInterpretedAsAscusOrAbove)),
+         days_since_cyto_asch_past_5_years = as.numeric(difftime(today(), DateOfLastKnownCytologyInterpretedAsAscHInPast5Years)),
+         days_since_high_grade = as.numeric(difftime(today(), HighGradeOrCancerHistologyResultsDate))
+  )
+
+second_most_recent_hpv_date <- logdata_hpv_dates %>%
+  filter(array.index == 2) %>%
+  rename(SecondMostRecentHpvReportDate = HpvDate)
+
+third_most_recent_hpv_date <- logdata_hpv_dates %>%
+  filter(array.index == 3) %>%
+  rename(ThirdMostRecentHpvReportDate = HpvDate)
+
+curr_hpv_neg_ascus <- current_patient_log %>%
+  left_join(second_most_recent_hpv_date, by = c("id")) %>%
+  left_join(third_most_recent_hpv_date, by = c("id")) %>%
+  filter(MostRecentHpvResult == "HPV-negative", MostRecentCytologyCotestResult == "ASC-US") %>%
+  mutate(days_since_hpv_prev = difftime(today(), SecondMostRecentHpvReportDate)) %>%
+  mutate(days_since_hpv_prev2x = difftime(today(), ThirdMostRecentHpvReportDate)) %>%
+  select(
+    id,
+    patientReference,
+    age,
+    mgmt_hasRecommendation,
+    mgmt_recommendation,
+    mgmt_recommendationGroup,
+    MostRecentHpvResult,
+    SecondMostRecentHpvResult,
+    ThirdMostRecentHpvResult,
+    MostRecentCytologyCotestResult,
+    SecondMostRecentCytologyCotestResult,
+    ThirdMostRecentCytologyCotestResult,
+    MostRecentBiopsyReportDate,
+    MostRecentBiopsyResult,
+    DateOfMostRecentNegativeHpv,
+    SecondMostRecentHpvReportDate,
+    ThirdMostRecentHpvReportDate,
+    MostRecentTreatmentDate,
+    days_since_hpv,
+    days_since_hpv_prev,
+    days_since_hpv_prev2x,
+    days_since_biopsy
+    )
+
+# Now we want to find patients with:
+# Most Recent HPV-negative/ASC-US 
+# Second Most Recent HPV-Positive / ASC-US
+# No biopsy OR treatment after second most recent Cotest
+curr_hpv_neg_ascus2x_summary <-  curr_hpv_neg_ascus %>%
+  filter(age > 25) %>%
+  filter(is.na(MostRecentBiopsyReportDate) | (MostRecentBiopsyReportDate < SecondMostRecentHpvReportDate)) %>%
+  filter(is.na(MostRecentTreatmentDate) | (MostRecentTreatmentDate < SecondMostRecentHpvReportDate)) %>%
+  filter(SecondMostRecentHpvResult == "HPV-positive", SecondMostRecentCytologyCotestResult == "ASC-US") %>%
+  filter(mgmt_hasRecommendation == TRUE) %>%
+  group_by(mgmt_recommendation,mgmt_recommendationGroup) %>%
+  summarize(
+    count = n(),
+    percent = percent(count / nrow(current_patient_log), accuracy = 0.1),
+    mean_days = round(mean(days_since_hpv)),
+    mean_prev_days = round(mean(days_since_hpv_prev)))
+
+if (nrow(curr_hpv_neg_ascus2x_summary) > 0)  {
+kable(curr_hpv_neg_ascus2x_summary,  col.names = c("Recommendation","Group","Count","%","Mean Days Since Most Recent Cotest","Mean Days Since Previous Cotest"), align='l',caption="<h1>HPV-Negative / ASC-US Without Completed Colposcopy</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) 
+} else {
+  cat("No log entries found for HPV+/ASC-US followed by HPV-/ASC-US")
+}
+```
+
+### HPV-Negative / ASC-US with two prior HPV-positive/ASC-US results
+How many patients were observed with HPV-/ASC-US preceded by two instances of HPV+/ASC-US? (With no biopsy or treatment since the third most recent cotest?)
+
+```{r hpv-ascus3x-history}
+curr_hpv_neg_ascus3x_summary <- curr_hpv_neg_ascus %>%
+  filter(age > 25) %>%
+  filter(is.na(MostRecentBiopsyReportDate) | (MostRecentBiopsyReportDate < ThirdMostRecentHpvReportDate)) %>%
+  filter(is.na(MostRecentTreatmentDate) | (MostRecentTreatmentDate < ThirdMostRecentHpvReportDate)) %>%
+  filter(SecondMostRecentHpvResult == "HPV-positive", SecondMostRecentCytologyCotestResult == "ASC-US") %>%
+  filter(ThirdMostRecentHpvResult == "HPV-positive", ThirdMostRecentCytologyCotestResult == "ASC-US") %>%
+  filter(mgmt_hasRecommendation == TRUE) %>%
+  group_by(mgmt_recommendation,mgmt_recommendationGroup) %>%
+  summarize(
+    count = n(),
+    percent = percent(count / nrow(current_patient_log), accuracy = 0.1),
+    mean_days = round(mean(days_since_hpv)),
+    mean_prev_days = round(mean(days_since_hpv_prev)),
+    mean_prev2x_days = round(mean(days_since_hpv_prev2x)))
+if (nrow(curr_hpv_neg_ascus3x_summary) > 0) {
+  kable(curr_hpv_neg_ascus3x_summary,  col.names = c("Recommendation","Group","Count","%","Mean Days Since Most Recent Cotest","Mean Days Since Previous Cotest","Mean Days Since Second-Previous Cotest"), align='l',caption="<h1>HPV-Negative / ASC-US Without Colposcopy, Two HPV+/ASC-US</h1>") %>%
+    kable_styling(bootstrap_options = c("striped"), full_width = T) 
+} else {
+    cat("No log entries found for (HPV+/ASC-US) x2 followed by HPV-/ASC-US")
+}
 ```
