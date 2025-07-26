@@ -5,7 +5,7 @@ date-format: D MMMM YYYY
 format: html
 editor: source
 author: Michael Nosal (mnosal@mitre.org)
-version: 0.2.1
+version: 0.2.2
 ---
 
 ```{r setup, include=FALSE}
