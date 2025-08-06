@@ -337,10 +337,10 @@ logdata_rare_abnormality <-tidyjson::as_tibble(
       enter_object(payload,ManageRareAbnormality) %>%
         spread_all(recursive = FALSE) %>%
         mutate(
-          temp_MostRecentTreatmentDate = as.Date(MostRecentTreatmentDate),
+          temp_MostRecentTreatmentDate = as.Date(MostRecentTreatmentDate, optional = TRUE),
           MostRecentTreatmentYear = ifelse(is.na(temp_MostRecentTreatmentDate), MostRecentTreatmentDate, NA),
           MostRecentTreatmentDate = temp_MostRecentTreatmentDate,
-          temp_TreatmentForHighGradeHistologyOrCytologyDate = as.Date(TreatmentForHighGradeHistologyOrCytologyDate),
+          temp_TreatmentForHighGradeHistologyOrCytologyDate = as.Date(TreatmentForHighGradeHistologyOrCytologyDate, optional = TRUE),
           TreatmentForHighGradeHistologyOrCytologyYear = ifelse(is.na(temp_TreatmentForHighGradeHistologyOrCytologyDate), TreatmentForHighGradeHistologyOrCytologyDate, NA),
           TreatmentForHighGradeHistologyOrCytologyDate = temp_TreatmentForHighGradeHistologyOrCytologyDate,
           DateOfLastKnownCytologyInterpretedAsAscHInPast5Years = date(DateOfLastKnownCytologyInterpretedAsAscHInPast5Years),
@@ -377,7 +377,7 @@ logdata_collate <-tidyjson::as_tibble(
                DateOfFirstBiopsyAfterMostRecentHpvReport = date(DateOfFirstBiopsyAfterMostRecentHpvReport),
                DateOfMostRecentCytologyBeforeBiopsy = date(DateOfMostRecentCytologyBeforeBiopsy),
                DateOfMostRecentReport = date(DateOfMostRecentReport),
-               temp_DateOfLastCervicalPrecancerTreatment = as.Date(DateOfLastCervicalPrecancerTreatment),
+               temp_DateOfLastCervicalPrecancerTreatment = as.Date(DateOfLastCervicalPrecancerTreatment, optional = TRUE),
                DateOfLastCervicalPrecancerTreatmentYear = ifelse(is.na(temp_DateOfLastCervicalPrecancerTreatment), DateOfLastCervicalPrecancerTreatment, NA),
                DateOfLastCervicalPrecancerTreatment = temp_DateOfLastCervicalPrecancerTreatment,
                MostRecentCin2orCin3BiopsyDate = date(MostRecentCin2orCin3BiopsyDate),
@@ -391,7 +391,7 @@ logdata_hpv_dates <- as_tibble (
       enter_object(message,payload,CollateManagementData) %>%
         enter_object(HpvDates) %>%
           gather_array() %>% append_values_string(column.name = "HpvDate") %>%
-    mutate(HpvDate = as.Date(HpvDate))
+    mutate(HpvDate = as.Date(HpvDate, optional = TRUE))
           
 
 )
