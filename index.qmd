@@ -5,7 +5,7 @@ date-format: D MMMM YYYY
 format: html
 editor: source
 author: Michael Nosal (mnosal@mitre.org)
-version: 0.2.5
+version: 0.2.6
 ---
 
 ```{r setup, include=FALSE}
@@ -1637,7 +1637,7 @@ biopsy_days <- biopsy_days %>%
 no_biopsy_days <- current_patient_log_dates %>%
   filter(is.na(MostRecentBiopsyResult)) %>%
   group_by(MostRecentBiopsyResult) %>%
-  summarize(mean_days = round(mean(days_since_biopsy, na.rm = TRUE)),
+  summarize(mean_days = NA),
             count = n(),
             percent = percent(count/nrow(current_patient_log_dates), accuracy = 0.1))
 
