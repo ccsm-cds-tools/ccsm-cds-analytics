@@ -5,7 +5,7 @@ date-format: D MMMM YYYY
 format: html
 editor: source
 author: Michael Nosal (mnosal@mitre.org)
-version: 0.2.5
+version: 0.2.7
 ---
 
 ```{r setup, include=FALSE}
@@ -140,7 +140,7 @@ logdata_messages <- as_tibble(
 
 # here we can get the number of unique patients in the log by checking patientReference, which is the patient's FHIR identifier
 # This should equal nrow(logdata_messages %>% distinct(patientReference))
-logfile_count$unique_patients <- length(unique(logdata_messages$patientReference))
+logfile_count$unique_patients <- nrow(logdata_messages %>% distinct(patientReference))
 
 logdata_distinct_patient_entries <- logdata_messages %>%
   mutate(date = as.POSIXct(date(logdata_messages$timestamp))) %>%
@@ -193,6 +193,7 @@ logdata_entry_times <- logdata_timestamps %>%
 # Now we can produce a timestamp scatterplot to show when data from the CDS was logged
 weekday_plot <- ggplot(logdata_entry_times, aes(x = localweekday, y = roundlocaltime)) +
   geom_count(color = "#4492da", alpha = 0.5, show.legend = FALSE) +
+  scale_fill_continuous(aes(count)) +
   scale_size(range = c(1, 10))+
     labs(title = "CDS Recommendation Tool Usage by Day of Week",
        subtitle = "Times Shown in US Central Timezone, Rounded to nearst 5 mins") +
@@ -200,7 +201,7 @@ weekday_plot <- ggplot(logdata_entry_times, aes(x = localweekday, y = roundlocal
   scale_x_discrete(limits = c("Sun","Mon","Tue","Wed","Thu","Fri","Sat")) +
   scale_y_datetime(name = "Time of Day", date_breaks= "1 hours", date_labels = "%H:%M") +
   theme_light()
-  
+
 weekday_plot
 ```
 
@@ -500,7 +501,11 @@ patient_demographics <- logdata_unique_patientinfo %>%
   select(age, race, ethnicity, isPregnant) %>%
   mutate(age_group = cut(age, breaks=c(0,24,29,65,120)))
 
+# Add check for age NA or ""
 patient_age_groups <- hist(patient_demographics$age, breaks=c(0,24,29,65,120), plot = FALSE)
+
+patients_unknown_age <- logdata_unique_patientinfo %>%
+  filter(is.na(age) | age == "")
 
 race_list <- tibble(
   race = c("White or Caucasian",
@@ -532,13 +537,14 @@ patient_ethnicity_groups <- ethnicity_list %>%
   mutate(count = replace_na(count, 0))
 
 demographics_summary <- tibble(
-  col = c("Total Unique Patients","Age < 25","Age 25-29","Age 30-65","Age 65+","White or Caucasian","Black or African American","Asian","American Indian or Alaska Native","Native Hawaiian or Other Pacific Islander","Other/Unknown","Hispanic or Latino","Non-Hispanic","Other/Unknown"),
+  col = c("Total Unique Patients","Age < 25","Age 25-29","Age 30-65","Age 65+","Age Unknown/Missing","White or Caucasian","Black or African American","Asian","American Indian or Alaska Native","Native Hawaiian or Other Pacific Islander","Other/Unknown","Hispanic or Latino","Non-Hispanic","Other/Unknown"),
   patients = c(
     logfile_count$unique_patients,
     patient_age_groups$counts[1], # under 25
     patient_age_groups$counts[2], # 25-29
     patient_age_groups$counts[3], # 30-65
     patient_age_groups$counts[4], # 65-120
+    nrow(patients_unknown_age), # For some reason there are patients with unknown ages
     patient_race_groups %>% filter(race == 'White or Caucasian') %>% .$count,
     patient_race_groups %>% filter(race == 'Black or African American') %>% .$count,
     patient_race_groups %>% filter(race == 'Asian') %>% .$count,
@@ -555,9 +561,9 @@ demographics_summary <- tibble(
 
 kable(demographics_summary,  col.names = c("Category","Count","%"), align='l',caption="<h1>Demographic Summary</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
-  pack_rows("Age Group (years)", 2, 5) %>%
-  pack_rows("Race", 6, 11) %>%
-  pack_rows("Ethnicity",12,14)
+  pack_rows("Age Group (years)", 2, 6) %>%
+  pack_rows("Race", 7, 12) %>%
+  pack_rows("Ethnicity", 13, 15)
 
 
 ```
@@ -713,6 +719,7 @@ current_patient_log_dates <- logdata_pathways_notoggle %>%
           id,
           patientReference,
           timeRequestSent,
+          recommendationDate,
           MostRecentCytologyReportWasWithinPastFiveYears,
           MostRecentHpvReportWasWithinPastFiveYears,
           MostRecentBiopsyReportDate,
@@ -830,8 +837,8 @@ These tables summarize patients' most recent HPV test, if it occurred in the pas
 Note: **HPV-positive** here refers to _any_ positive HPV result: 
 
 - HPV16+
-- HPV16-, 18+
-- HPV-positive (other): includes untyped HPV and other high risk HPV genotypes besides 16, 18
+- HPV16-, HPV18+
+- HPV (+) Other: includes untyped HPV and other high risk HPV genotypes besides 16, 18
 
 
 ```{r hpv-days-report-time}
@@ -1283,13 +1290,20 @@ The recommendations generated in the Common Abnormality pathway includes those p
 # risk table recommendation.
 # Select distinct log entries for a patientReference, recommendation date, recommendation and group. 
 # Filter out hysterectomy and immunosuppressed recommendations which supercede risk tables
+# "Reflex Cytology" still gives WhichTableMadeTheRecommendation == 1, but action == ""
+# so that needs to be filtered out.
 management_risk_table_recs <- management_data_all |>
   distinct(patientReference, mgmt_recommendationDate, mgmt_recommendation, mgmt_recommendationGroup, .keep_all = TRUE) %>%
   left_join(logdata_relevant_row) %>%
   left_join(logdata_collate) %>%
   mutate(risk_table_cyto = ifelse(cyto=="", ReferringCytologyResult, cyto)) %>%
   mutate(risk_table_hpv = ifelse(hpv=="", ReferringHpvResult, hpv)) %>%
-  filter(!is.na(action), !is.na(WhichTableMadeTheRecommendation), mgmt_recommendation != "Hysterectomy", mgmt_recommendationGroup != "Immunosuppressed (K.3)")
+  filter(!is.na(action),
+         action != "",
+         !is.na(WhichTableMadeTheRecommendation),
+         mgmt_recommendation != "Hysterectomy",
+         mgmt_recommendationGroup != "Immunosuppressed (K.3)",
+         mgmt_recommendationGroup != "Reflex Cytology")
 
 management_risk_table_recs_plot <- management_risk_table_recs %>% ggplot(aes(x=TableRecommendation)) +
   ggtitle("Risk Table Recommendations") +
@@ -1316,6 +1330,7 @@ kable(management_risk_group_tbl,  align='l', col.names = c('Recommendation','Gro
 # Most Recent Cytology and HPV for Risk Table Recommendations
 The risk table-based recommendations are based on current HPV and Cytology results. 
 For patients who received a recommendation from the risk tables, what was their most recent cytology and HPV results?
+This _may count individual patients more than once_, if the same patient has been viewed in the Recommendation Tool on multiple occasions. 
 
 ```{r}
 risk_table_cyto <- management_risk_table_recs %>%
@@ -1483,10 +1498,12 @@ cotest_cols <- c("Age Group" = "age_group","Most Recent Cytology Cotest Result" 
 cotest_results_tbl <- logdata_pathways_notoggle %>%
   left_join(logdata_collate) %>% 
   left_join(logdata_common) %>%
+  filter(!is.na(age), age != "") %>%
   filter(MostRecentCytologyIsNotACotest == FALSE) %>%
   select(id, patientReference, age, MostRecentCytologyCotestResult, MostRecentHpvResult) %>%
   mutate(MostRecentCytologyCotestResult = ifelse(MostRecentCytologyCotestResult == "UNSAT", "Unsatisfactory", MostRecentCytologyCotestResult)) %>%
   mutate(MostRecentCytologyCotestResult = ifelse(MostRecentCytologyCotestResult == "ALL", "Unknown/Missing", MostRecentCytologyCotestResult)) %>%
+  mutate(MostRecentCytologyCotestResult = ifelse(is.na(MostRecentCytologyCotestResult), "No Result Found", MostRecentCytologyCotestResult)) %>%
   mutate(age_group = cut(age, breaks=c(0,24,29,65,120), labels=c("Under 25","25 to 29","30 to 65","Over 65")))
 
 cotest_results_age_group <- cotest_results_tbl %>%
@@ -1590,25 +1607,28 @@ cin2cin3 <- current_patient_log_dates %>%
 cin2cin3_recent_summary <- cin2cin3 %>%
   filter(MostRecentBiopsyReportDate == MostRecentCin2orCin3BiopsyDate) %>%
   group_by(MostRecentBiopsyResult) %>%
-  summarize(mean_days = round(mean(days_since_cin2_cin3_biopsy)), count = n(), percent = percent(count/nrow(cin2cin3), accuracy = 0.1))
+  summarize(count = n(), percent = percent(count/nrow(cin2cin3), accuracy = 0.1), mean_days = round(mean(days_since_cin2_cin3_biopsy)))
 
 cin2cin3_previous_summary <- cin2cin3 %>%
+  left_join(logdata_rare_abnormality) %>%
   filter(MostRecentBiopsyReportDate > MostRecentCin2orCin3BiopsyDate) %>%
-  group_by(MostRecentBiopsyResult) %>%
-  summarize(mean_days = round(mean(days_since_cin2_cin3_biopsy)), count = n(), percent = percent(count/nrow(cin2cin3), accuracy = 0.1))
+  filter(SecondMostRecentBiopsyResult %in% c("CIN2","CIN3")) %>%
+  group_by(SecondMostRecentBiopsyResult) %>%
+  summarize(count = n(), percent = percent(count/nrow(cin2cin3), accuracy = 0.1), mean_days = round(mean(days_since_cin2_cin3_biopsy))) %>%
+  select(MostRecentBiopsyResult = SecondMostRecentBiopsyResult, count, percent, mean_days)
 
 mean_all_cin2cin3_days <- tibble(
   MostRecentBiopsyResult = c("CIN2 or CIN3"),
-  mean_days = c(round(mean(cin2cin3$days_since_cin2_cin3_biopsy))),
   count = nrow(cin2cin3),
-  percent = percent(1)
+  percent = percent(1),
+  mean_days = round(mean(cin2cin3$days_since_cin2_cin3_biopsy, na.rm = TRUE))
 )
 cin2cin3_summary <- rbind(cin2cin3_recent_summary,cin2cin3_previous_summary,mean_all_cin2cin3_days)
 
-kable(cin2cin3_summary,  col.names = c("Biopsy Result","Mean Days since CIN2/CIN3","Count","%"), align='l',caption="<h1>Mean Days Since CIN2/CIN3 Biopsy</h1>") %>%
+kable(cin2cin3_summary,  col.names = c("Biopsy Result","Count","%","Mean Days since CIN2/CIN3"), align='l',caption="<h1>Mean Days Since CIN2/CIN3 Biopsy</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("Most Recent Biopsy is CIN2/CIN3",1,nrow(cin2cin3_recent_summary)) %>%
-  pack_rows("An Older Biopsy was CIN2/CIN3", 1+nrow(cin2cin3_recent_summary), nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary)) %>%
+  pack_rows("Second Most Recent Biopsy was CIN2/CIN3", 1+nrow(cin2cin3_recent_summary), nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary)) %>%
   pack_rows("CIN2/CIN3 Result at Any Time", 1+nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary), 1+nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary))
   
 ```
@@ -1637,7 +1657,7 @@ biopsy_days <- biopsy_days %>%
 no_biopsy_days <- current_patient_log_dates %>%
   filter(is.na(MostRecentBiopsyResult)) %>%
   group_by(MostRecentBiopsyResult) %>%
-  summarize(mean_days = round(mean(days_since_biopsy, na.rm = TRUE)),
+  summarize(mean_days = NA,
             count = n(),
             percent = percent(count/nrow(current_patient_log_dates), accuracy = 0.1))
 
@@ -1665,7 +1685,9 @@ What is the most recent biopsy result after the most recent HPV report?
 
 ```{r hpv-biopsy-days}
 has_hpv_biopsy <- current_patient_log_dates %>%
-  filter(!is.na(DateOfFirstBiopsyAfterMostRecentHpvReport))
+  filter(!is.na(MostRecentBiopsyReportDate), !is.na(DateOfMostRecentHpvReport)) %>% 
+  filter(MostRecentBiopsyReportDate > DateOfMostRecentHpvReport)
+
 
 hpv_biopsy_results <- has_hpv_biopsy %>%
   mutate(MostRecentHpvResult = ifelse(MostRecentHpvResult == "ALL", "No Result Found", MostRecentHpvResult)) %>%
@@ -1678,7 +1700,8 @@ hpv_biopsy_results <- has_hpv_biopsy %>%
   group_by(MostRecentHpvResult, MostRecentBiopsyResult) %>%
   summarize(
             count = n(),
-            percent = percent(count/nrow(current_patient_log_dates), accuracy = 0.1))
+            percent = percent(count/nrow(current_patient_log_dates), accuracy = 0.1),
+            mean_days = round(mean(days_since_hpv - days_since_biopsy, na.rm = TRUE), 0))
 
 #hpv_biopsy_results <- hpv_biopsy_results %>%
 #    arrange(factor(MostRecentBiopsyResult, levels = c("<CIN1","CIN1","CIN2","HSIL, Unspecified","CIN3","AIS","Cancer","Insufficient","Result Missing","Unrecognized Test Result")))
@@ -1687,12 +1710,13 @@ total_hpv_biopsy_results <- tibble(
   MostRecentHpvResult = c("Any HPV"),
   MostRecentBiopsyResult = c("Any"),
   count = nrow(has_hpv_biopsy),
-  percent = percent(nrow(has_hpv_biopsy) / nrow(current_patient_log_dates), accuracy = 0.1)
+  percent = percent(nrow(has_hpv_biopsy) / nrow(current_patient_log_dates), accuracy = 0.1),
+  mean_days = round(mean(hpv_biopsy_results$mean_days),0)
 )
 
 hpv_biopsy_days_summary <- rbind(hpv_biopsy_results,total_hpv_biopsy_results)
 
-kable(hpv_biopsy_days_summary,  col.names = c("HPV Result","Biopsy Result","Count","%"), align='l',caption="<h1>Most Recent Biopsy after Most Recent HPV</h1>") %>%
+kable(hpv_biopsy_days_summary,  col.names = c("HPV Result","Biopsy Result","Count","%","Mean Days"), align='l',caption="<h1>Most Recent Biopsy after Most Recent HPV</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>% 
   pack_rows("Total All HPV-Biopsy",1+nrow(hpv_biopsy_results),1+nrow(hpv_biopsy_results))
 
@@ -1825,6 +1849,8 @@ if (nrow(curr_hpv_neg_ascus_no_treat_bio_summary) > 0)  {
 }
 ```
 
+## HPV+/ASC-US followed by HPV-/ASC-US
+How many patients had a costest result of HPV-positive (any type) with ASC-US, followed by HPV-negative with ASC-US?
 ```{r hpv-ascus2x}
 # Now we want to find patients with:
 # Most Recent HPV-negative/ASC-US 
@@ -1832,6 +1858,7 @@ if (nrow(curr_hpv_neg_ascus_no_treat_bio_summary) > 0)  {
 # No biopsy OR treatment after second most recent Cotest
 curr_hpv_neg_ascus2x_summary <- curr_hpv_neg_ascus %>%
   filter(age > 25) %>%
+  filter(!is.na(SecondMostRecentHpvReportDate)) %>%
   filter(is.na(MostRecentBiopsyReportDate) | (MostRecentBiopsyReportDate < SecondMostRecentHpvReportDate)) %>%
   filter(is.na(MostRecentTreatmentDate) | (MostRecentTreatmentDate < SecondMostRecentHpvReportDate)) %>%
   filter(SecondMostRecentHpvResult == "HPV-positive", SecondMostRecentCytologyCotestResult == "ASC-US") %>%
@@ -1857,6 +1884,7 @@ How many patients were observed with HPV-/ASC-US preceded by two instances of HP
 ```{r hpv-ascus3x-history}
 curr_hpv_neg_ascus3x_summary <- curr_hpv_neg_ascus %>%
   filter(age > 25) %>%
+  filter(!is.na(ThirdMostRecentHpvReportDate)) %>%
   filter(is.na(MostRecentBiopsyReportDate) | (MostRecentBiopsyReportDate < ThirdMostRecentHpvReportDate)) %>%
   filter(is.na(MostRecentTreatmentDate) | (MostRecentTreatmentDate < ThirdMostRecentHpvReportDate)) %>%
   filter(SecondMostRecentHpvResult == "HPV-positive", SecondMostRecentCytologyCotestResult == "ASC-US") %>%
