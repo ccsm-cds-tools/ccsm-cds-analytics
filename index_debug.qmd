@@ -5,7 +5,7 @@ date-format: D MMMM YYYY
 format: html
 editor: source
 author: Michael Nosal (mnosal@mitre.org)
-version: 0.2.7
+version: 0.3.1
 ---
 
 ```{r setup, include=FALSE}
@@ -55,6 +55,9 @@ logfiles_directory <- ifelse(
   logfiles_env_directory != "",
   logfiles_env_directory,
   datafiles_path)
+
+output_directory <- here('analysis','datafiles')
+output_csv <- FALSE | Sys.getenv("OUTPUT_CSV") == "TRUE"
 
 # Read all .log and .log.gz files in the directory
 all_logfiles <- dir(logfiles_directory, pattern = "*.log|*.log.gz")
@@ -177,6 +180,7 @@ kable(logdata_entries_summary,  col.names = c("Logfile Entry Date","Log Entries"
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("All Logfile Entries", nrow(logdata_entries_summary), nrow(logdata_entries_summary))
 
+export_csv_file(logdata_entries_summary,"logdata_entries_summary.csv")
 ```
 
 # When is the CDS Recommendation Tool Used
@@ -191,7 +195,10 @@ logdata_entry_times <- logdata_timestamps %>%
          localtime = hms::as_hms(as_datetime(timestamp, tz="America/Chicago")),
          roundlocaltime = as.POSIXct(hms::as_hms(round_date(as_datetime(timestamp, tz="America/Chicago"), "5 mins"))),
          localweekday = lubridate::wday(localdate)
-         )
+         ) %>%
+  select(utcdate,localdate,localtime,roundlocaltime,localweekday)
+
+export_csv_file(logdata_entry_times,"logdata_entry_times.csv")
 
 # Now we can produce a timestamp scatterplot to show when data from the CDS was logged
 weekday_plot <- ggplot(logdata_entry_times, aes(x = localweekday, y = roundlocaltime)) +
@@ -203,7 +210,7 @@ weekday_plot <- ggplot(logdata_entry_times, aes(x = localweekday, y = roundlocal
   scale_x_discrete(limits = c("Sun","Mon","Tue","Wed","Thu","Fri","Sat")) +
   scale_y_datetime(name = "Time of Day", date_breaks= "1 hours", date_labels = "%H:%M") +
   theme_light()
-  
+
 weekday_plot
 ```
 
@@ -218,6 +225,8 @@ logdata_patient_times <- logdata_messages %>%
   group_by(weekday) %>%
   distinct(patientReference) %>%
   summarize(count = n())
+
+export_csv_file(logdata_patient_times,"logdata_patient_times.csv")
 
 patient_day_plot <- ggplot(logdata_patient_times, aes(x = weekday, y = count)) +
   geom_col(fill = "#4492da", width = 0.5) +
@@ -246,6 +255,8 @@ logdata_entry_days <- logdata_messages %>%
   summarize(entrycount = n()) %>%
   mutate(percent = percent(entrycount / sum(entrycount), accuracy = 0.1))
 
+export_csv_file(logdata_entry_days,"logdata_entry_days.csv")
+
 entry_day_plot <- ggplot(logdata_entry_days, aes(x = weekday, y = entrycount )) +
   geom_col(fill = "#4492da", width = 0.5) +
   labs(title = "CDS Recommendation Tool Usage by Day of Week",
@@ -273,7 +284,7 @@ These toggles may be switched on and off as many times as the user likes. Every 
 
 ```{r toggle-switch-usage}
 # logdata_messages has all toggle switch usage.
-toggle_usage_tbl <- tibble(
+toggle_usage_summary <- tibble(
   col = c("Total Log Entries","Immunosuppressed","Pregnant","Future pregnancy concerns","Symptomatic","Any Toggle Changed (On or Off)"),
   toggle_counts = c(
     logfile_count$total_entries,
@@ -286,7 +297,9 @@ toggle_usage_tbl <- tibble(
   percent = percent(toggle_counts / logfile_count$total_entries, accuracy = 0.1)
 )
 
-kable(toggle_usage_tbl, col.names = c("","Count","%"), align='l', caption="<h1>Toggle Switch Usage</h1>") %>%
+export_csv_file(toggle_usage_summary,"toggle_usage_summary.csv")
+
+kable(toggle_usage_summary, col.names = c("","Count","%"), align='l', caption="<h1>Toggle Switch Usage</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("Toggle Switch Use", 2, 6)
 
@@ -301,7 +314,7 @@ The performance of the CDS is dependent on the size of the patient history and h
 # logdata_messages has the timings for apply
 
 apply_summary <- round(summary(logdata_messages$cdsApplyTime/1000),1)
-apply_tbl <- tibble(col=c("Min","1st Quartile","Median","Mean","3rd Quartile","Max"),
+apply_time_summary <- tibble(col=c("Min","1st Quartile","Median","Mean","3rd Quartile","Max"),
                     val=c(apply_summary[1],
                           apply_summary[2],
                           apply_summary[3],
@@ -309,7 +322,8 @@ apply_tbl <- tibble(col=c("Min","1st Quartile","Median","Mean","3rd Quartile","M
                           apply_summary[5],
                           apply_summary[6])
 )
-kable(apply_tbl, col.names = c("Value","Time (sec)"), align='l', caption="<h1>CDS Apply Time (All Log Entries)</h1>") %>%
+export_csv_file(apply_time_summary,"apply_time_summary.csv")
+kable(apply_time_summary, col.names = c("Value","Time (sec)"), align='l', caption="<h1>CDS Apply Time (All Log Entries)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
 ```
 
@@ -326,7 +340,11 @@ apply_bins <- 3*round(sqrt(nrow(logdata_messages)))
 
 apply_times <- logdata_messages %>%
   mutate(apply_sec = cdsApplyTime / 1000) %>%
-  filter(apply_sec < apply_iqr)
+  filter(apply_sec < apply_iqr) %>%
+  select(timeRequestSent, apply_sec)
+
+export_csv_file(apply_times,"apply_times.csv")
+
 apply_plot <- apply_times %>%
   ggplot(aes(x = apply_sec)) +
   geom_vline(xintercept = 5, linetype = 'dashed', color = "#ee3300") +
@@ -396,15 +414,11 @@ logdata_rare_abnormality <-tidyjson::as_tibble(
       enter_object(payload,ManageRareAbnormality) %>%
         spread_all(recursive = FALSE) %>%
         mutate(
-          temp_MostRecentTreatmentDate = as.Date(MostRecentTreatmentDate, optional = TRUE),
-          MostRecentTreatmentYear = ifelse(is.na(temp_MostRecentTreatmentDate), MostRecentTreatmentDate, NA),
-          MostRecentTreatmentDate = temp_MostRecentTreatmentDate,
-          temp_TreatmentForHighGradeHistologyOrCytologyDate = as.Date(TreatmentForHighGradeHistologyOrCytologyDate, optional = TRUE),
-          TreatmentForHighGradeHistologyOrCytologyYear = ifelse(is.na(temp_TreatmentForHighGradeHistologyOrCytologyDate), TreatmentForHighGradeHistologyOrCytologyDate, NA),
-          TreatmentForHighGradeHistologyOrCytologyDate = temp_TreatmentForHighGradeHistologyOrCytologyDate,
+          MostRecentTreatmentDate = as.Date(MostRecentTreatmentDate, optional = TRUE),
+          MRTD_date = date(MostRecentTreatmentDate),
+          TreatmentForHighGradeHistologyOrCytologyDate = as.Date(TreatmentForHighGradeHistologyOrCytologyDate, optional = TRUE),
           DateOfLastKnownCytologyInterpretedAsAscHInPast5Years = as.Date(DateOfLastKnownCytologyInterpretedAsAscHInPast5Years, optional = TRUE),
-        ) %>%
-        select(-temp_MostRecentTreatmentDate, -temp_TreatmentForHighGradeHistologyOrCytologyDate)
+        )
 )
 
 # Load attributes from ManageSpecialPopulation
@@ -446,12 +460,9 @@ logdata_collate <-tidyjson::as_tibble(
           DateOfFirstBiopsyAfterMostRecentHpvReport = as.Date(DateOfFirstBiopsyAfterMostRecentHpvReport, optional = TRUE),
           DateOfMostRecentCytologyBeforeBiopsy = as.Date(DateOfMostRecentCytologyBeforeBiopsy, optional = TRUE),
           DateOfMostRecentReport = as.Date(DateOfMostRecentReport, optional = TRUE),
-          temp_DateOfLastCervicalPrecancerTreatment = as.Date(DateOfLastCervicalPrecancerTreatment, optional = TRUE),
-          DateOfLastCervicalPrecancerTreatmentYear = ifelse(is.na(temp_DateOfLastCervicalPrecancerTreatment), DateOfLastCervicalPrecancerTreatment, NA),
-          DateOfLastCervicalPrecancerTreatment = temp_DateOfLastCervicalPrecancerTreatment,
+          DateOfLastCervicalPrecancerTreatment = as.Date(DateOfLastCervicalPrecancerTreatment, optional = TRUE),
           MostRecentCin2orCin3BiopsyDate = as.Date(MostRecentCin2orCin3BiopsyDate, optional = TRUE),
-        ) %>%
-        select(-temp_DateOfLastCervicalPrecancerTreatment)
+        )
 )
 
 # Extract HPV Dates from CollateManagementData
@@ -466,9 +477,6 @@ logdata_hpv_dates <- as_tibble (
     mutate(HpvDate = as.Date(HpvDate, optional = TRUE)) %>%
     select(-document.id)
 )
-
-
-
 ```
 
 ## Patient Demographic Information
@@ -499,15 +507,21 @@ logdata_all_patientinfo <- tidyjson::as_tibble(
     enter_object(message) %>%
       spread_values(patientReference = jstring('patientReference'), timeRequestSent = jstring('timeRequestSent')) %>%
       enter_object(patientInfo) %>%
-        spread_values(age=jinteger('age'),
+        spread_values(
                       racestr=jstring('race'),
                       isPregnant = jlogical('isPregnant')) %>%
-      select(-document.id, age, racestr, isPregnant) %>%
+      select(-document.id, racestr, isPregnant) %>%
       mutate(patientReference = as.factor(patientReference),
              timeRequestSent = ymd_hms(timeRequestSent)) %>%
       arrange(desc(timeRequestSent)) %>%
-      separate(racestr, c("race","ethnicity"), sep="; ", extra = "drop")
+      separate(racestr, c("raceval","ethnicity"), sep="; ", extra = "drop") %>%
+      separate(raceval, c("race","raceadj"), sep=", ", extra = "drop", fill="right") %>%
+    mutate(race = ifelse(race == "White", "White or Caucasian", race)) %>%
+    mutate(race = ifelse(race == "Black", "Black or African American", race))
 )[,c(1,2,3,4,5,6,7)]
+
+logdata_all_patientinfo <- logdata_all_patientinfo %>%
+  left_join(logdata_dashboard %>% select(id, age=PatientAge))
 
 # DEBUG DEBUG DEBUG
 # Confirm the logdata files match
@@ -594,12 +608,16 @@ print("patients_unknown_patientage")
 print(patients_unknown_age$PatientAge)
 
 race_list <- tibble(
-  race = c("White or Caucasian",
+  race = c(
+  "White or Caucasian",
   "Black or African American",
   "Asian",
   "American Indian or Alaska Native",
   "Native Hawaiian or Other Pacific Islander",
   "Other",
+  "Unknown",
+  "Multiracial",
+  "Patient Refused",
   NA)
 )
 
@@ -663,33 +681,38 @@ print("Patient ethnicity values")
 print(unique(patient_demographics$ethnicity))
 
 demographics_summary <- tibble(
-  col = c("Total Unique Patients","Age < 25","Age 25-29","Age 30-65","Age 65+","Age Unknown/Missing","White or Caucasian","Black or African American","Asian","American Indian or Alaska Native","Native Hawaiian or Other Pacific Islander","Other/Unknown","Hispanic or Latino","Non-Hispanic","Other/Unknown"),
+  col = c("Total Unique Patients","Age < 25","Age 25-29","Age 30-65","Age 65+","Age Unknown/Missing","White or Caucasian","Black or African American","Asian","American Indian or Alaska Native","Native Hawaiian or Other Pacific Islander","Multiracial","Other/Unknown","Patient Refused","Hispanic or Latino","Non-Hispanic","Other/Unknown"),
   patients = c(
     logfile_count$unique_patients,
     patient_age_groups$counts[1], # under 25
     patient_age_groups$counts[2], # 25-29
     patient_age_groups$counts[3], # 30-65
     patient_age_groups$counts[4], # 65-120
-    nrow(patients_unknown_age), # For some reason there are patients with unknown ages
+    nrow(patients_unknown_age), # For some reason there could be patients with unknown ages
     patient_race_groups %>% filter(race == 'White or Caucasian') %>% .$count,
     patient_race_groups %>% filter(race == 'Black or African American') %>% .$count,
     patient_race_groups %>% filter(race == 'Asian') %>% .$count,
     patient_race_groups %>% filter(race == 'American Indian or Alaska Native') %>% .$count,
     patient_race_groups %>% filter(race == 'Native Hawaiian or Other Pacific Islander') %>% .$count,
+    patient_race_groups %>% filter(race == 'Multiracial') %>% .$count,
     (patient_race_groups %>% filter(is.na(race)) %>% .$count +
-      patient_race_groups %>% filter(race == 'Other') %>% .$count),
+     patient_race_groups %>% filter(race == 'Other') %>% .$count +
+     patient_race_groups %>% filter(race == 'Unknown') %>% .$count),
+    patient_race_groups %>% filter(race == 'Patient Refused') %>% .$count,
     patient_ethnicity_groups %>% filter(ethnicity == 'Hispanic or Latino') %>% .$count,
     patient_ethnicity_groups %>% filter(ethnicity == 'Not Hispanic or Latino') %>% .$count,
     patient_ethnicity_groups %>% filter(is.na(ethnicity)) %>% .$count
   ),
-  pct = round((patients/logfile_count$unique_patients) * 100,1)
+  percent = percent((patients/logfile_count$unique_patients), accuracy = 0.1)
 )
 
-kable(demographics_summary,  col.names = c("Category","Count","%"), align='l',caption="<h1>Demographic Summary</h1>") %>%
+export_csv_file(demographics_summary,"demographics_summary.csv")
+
+kable(demographics_summary,  col.names = c("Category","Count","%"), align='l',caption="<h1>Demographic Summary (Unique Patients)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("Age Group (years)", 2, 6) %>%
-  pack_rows("Race", 7, 12) %>%
-  pack_rows("Ethnicity", 13, 15)
+  pack_rows("Race", 7, 14) %>%
+  pack_rows("Ethnicity", 15, 17)
 
 
 ```
@@ -770,7 +793,7 @@ not_pregnant_with_concerned_toggle <- logdata_pregnant_info %>%
 # there will be one row for every patient who was not pregnant but had the isPregnantConcerned toggle on at some point
 patient_count$pregnant_concerned_toggle <- nrow(not_pregnant_with_concerned_toggle)
 
-pregnant_count_tbl <- tibble(
+pregnant_count_summary <- tibble(
     col = c("Total Unique Patients","Pregnant at Any Entry","Pregnant at Most Recent Entry","Used Pregnant Toggle","Used Pregnant Concerned Toggle"),
   patients = c(
         logfile_count$unique_patients,
@@ -779,10 +802,12 @@ pregnant_count_tbl <- tibble(
         patient_count$pregnant_toggle,
         patient_count$pregnant_concerned_toggle
   ),
-  pct = percent(patients/logfile_count$unique_patients, accuracy = 0.1 )
+  percent = percent(patients/logfile_count$unique_patients, accuracy = 0.1 )
 )
 
-kable(pregnant_count_tbl,  col.names = c("Category","Count","%"), align='l',caption="<h1>Patient Pregnancy Status</h1>") %>%
+export_csv_file(pregnant_count_summary,"pregnant_count_summary.csv")
+
+kable(pregnant_count_summary,  col.names = c("Category","Count","%"), align='l',caption="<h1>Patient Pregnancy Status</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("Pregnancy Status", 2, 3) %>%
   pack_rows("Toggle Use", 4, 5) 
@@ -820,6 +845,7 @@ logdata_pathways <-tidyjson::as_tibble(
         scrn_recommendationDate = date(scrn_recommendationDate)) %>%
   select(-document.id)  
 ) %>%
+  left_join(logdata_dashboard %>% select(id, age = PatientAge)) %>%
   left_join(logdata_messages, by='id') %>% # Add columns which have toggle status and timings 
   arrange(desc(timeRequestSent))
 
@@ -846,6 +872,7 @@ current_patient_log_dates <- logdata_pathways_notoggle %>%
           patientReference,
           timeRequestSent,
           recommendationDate,
+          DateOfMostRecentReport,
           MostRecentCytologyReportWasWithinPastFiveYears,
           MostRecentHpvReportWasWithinPastFiveYears,
           MostRecentBiopsyReportDate,
@@ -959,7 +986,21 @@ kable(debug_cyto_ascus_five, col.names=c("id","Most Recent Cyto Date","Days Sinc
 debug_cyto_ascus_five_mean_days <- mean(debug_cyto_ascus_five$days_since_cyto_ascus_above, na.rm = TRUE)
 paste("Debug Cytology Ascus Over 5 years ago mean days = ", debug_cyto_ascus_five_mean_days)  
 
-kable(recent_days_cyto_summary, col.names = c("Cytology Report Time","Had Test","Count","Percent","Mean Days","Mean Days Since NILM","Mean Days Since ≥ ASC-US"), align='l', caption="<h1>Most Recent Cytology</h1>") %>%
+cyto_total <- tibble(
+  report = "Total Current Patient Entries",
+  included = "",
+  count = nrow(current_patient_log_dates),
+  percent = "100.0%",
+  mean_days = round(mean(current_patient_log_dates$days_since_cytology, na.rm = TRUE), 0),
+  mean_nilm_days = round(mean(current_patient_log_dates$days_since_cyto_nilm, na.rm = TRUE), 0),
+  mean_ascus_days = round(mean(current_patient_log_dates$days_since_cyto_ascus_above, na.rm = TRUE), 0)
+)
+
+recent_days_cyto_summary <- rbind(recent_days_cyto_summary,cyto_total)
+
+export_csv_file(recent_days_cyto_summary, "recent_days_cyto_summary.csv")
+
+kable(recent_days_cyto_summary, col.names = c("Cytology Report Time","Had Test","Count","Percent","Mean Days","Mean Days Since NILM","Mean Days Since ≥ ASC-US"), align='l', caption="<h1>Most Recent Cytology (All Patient Views)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
 ```
 
@@ -978,8 +1019,8 @@ These tables summarize patients' most recent HPV test, if it occurred in the pas
 Note: **HPV-positive** here refers to _any_ positive HPV result: 
 
 - HPV16+
-- HPV16-, 18+
-- HPV-positive (other): includes untyped HPV and other high risk HPV genotypes besides 16, 18
+- HPV16-, HPV18+
+- HPV (+) Other: includes untyped HPV and other high risk HPV genotypes besides 16, 18
 
 
 ```{r hpv-days-report-time}
@@ -1007,13 +1048,27 @@ recent_days_hpv_summary <- current_patient_log_dates %>%
   ungroup() %>%
   select(report, included, count, percent, mean_days, mean_hpv_positive_days, mean_hpv_negative_days)
 
+hpv_total <- tibble(
+  report = "Total Current Patient Entries",
+  included = "",
+  count = nrow(current_patient_log_dates),
+  percent = "100.0%",
+  mean_days = round(mean(current_patient_log_dates$days_since_hpv, na.rm = TRUE), 0),
+  mean_hpv_positive_days = round(mean(current_patient_log_dates$days_since_hpv_positive, na.rm = TRUE), 0),
+  mean_hpv_negative_days = round(mean(current_patient_log_dates$days_since_hpv_negative, na.rm = TRUE), 0)
+)
+
+recent_days_hpv_summary <- rbind(recent_days_hpv_summary,hpv_total)
+
+export_csv_file(recent_days_hpv_summary, "recent_days_hpv_summary.csv")
+
 kable(recent_days_hpv_summary, col.names = c("HPV Report Time","Had Test","Count","Percent","Mean Days","Mean Days Since Last HPV (+) Positive","Mean Days Since Last HPV (-) Negative"), align='l', caption="<h1>Most Recent HPV</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
   
 ```
 
 ## Most Recent Positive Screening By Result
-Recent Positive Screening is defined as positive primary HPV _or_ cotest. This does **not** include positive results by cytology alone.
+Recent Positive Screening is defined as positive primary HPV _or_ cotest. This does **not** include positive results by cytology alone. Totals _may count individual patients more than once_, if the same patient has been viewed in the Recommendation Tool on multiple occasions. These are the positive screening results from the set of `r nrow(current_patient_log_dates)` current patient entries.
 
 ```{r days-positive-screening}
 # Note that cytology without a result gets assigned the result code "ALL" for purposes of risk lookup, so we need to filter this out.
@@ -1049,18 +1104,59 @@ all_positive_screening_table <- tibble(
   percent = percent(1),
   mean_days = round(mean(current_patient_log_dates %>% filter(MostRecentScreeningResultIsPositive, !is.na(MostRecentHpvResult),!is.na(MostRecentCytologyCotestResult)) %>% .$days_since_positive_screening, na.rm = TRUE),0)
 )
-recent_positive_screening_summary <- rbind(recent_positive_screening_by_cyto_summary, recent_positive_screening_by_hpv_summary, all_positive_screening_table) %>% 
+
+recent_positive_screening_summary <- rbind(
+    recent_positive_screening_by_cyto_summary,
+    recent_positive_screening_by_hpv_summary,
+    all_positive_screening_table
+  ) %>% 
   mutate(mean_days = round(mean_days,0))
 
-kable(recent_positive_screening_summary, col.names = c("Result","Count","Percent","Mean Days"), align='l', caption="<h1>Most Recent Positive Screening Result</h1>") %>%
+export_csv_file(recent_positive_screening_summary,"recent_positive_screening_summary.csv")
+
+kable(recent_positive_screening_summary, col.names = c("Result","Count","Percent","Mean Days"), align='l', caption="<h1>Most Recent Positive Screening Result (All Patient Views)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("Cytology Result", 1, nrow(recent_positive_screening_by_cyto_summary)) %>%
   pack_rows("HPV Result", 1+nrow(recent_positive_screening_by_cyto_summary), nrow(recent_positive_screening_summary)-1 ) %>%
-  pack_rows("All Positive Screening", nrow(recent_positive_screening_summary), nrow(recent_positive_screening_summary))
+  pack_rows("All Positive Screening", nrow(recent_positive_screening_summary), nrow(recent_positive_screening_summary)) 
 ```
 
 # Treatment within Past Year
-How many patients have had their most recent treatment within the past year when they were viewed in the CDS Recommendation Tool?
+DEBUG DEBUG DEBUG DEBUG
+
+```{r debug-treatment-dates}
+debug_most_recent_treatment_date <- tidyjson::as_tibble(
+  logdata %>%
+    spread_values(id = jstring(id), timestamp = jstring(timestamp)) %>% 
+    enter_object(message) %>%
+      enter_object(payload, ManageRareAbnormality) %>%
+        spread_all(recursive = FALSE) %>%
+    select(id, timestamp, MostRecentTreatmentDate)
+)
+  
+debug_treatment_date <- 
+  debug_most_recent_treatment_date %>%
+    mutate(datesplit = stringr::str_split(MostRecentTreatmentDate, "T") %>% map_chr(., 1)) %>%
+    mutate(as_Date = as.Date(datesplit, optional=TRUE),
+           ymd = lubridate::ymd(datesplit, quiet = TRUE),
+           ymd_hms = lubridate::ymd_hms(datesplit, truncated = 3, quiet = TRUE),
+           date_ymdhms = date(ymd_hms),
+           date_ymd_hms = ymd(ymd_hms)
+    )
+
+           
+kable(debug_treatment_date, align='l', caption="<h1>DEBUG Most Recent Treatment Date</h1>") %>%
+    kable_styling(bootstrap_options = c("striped"), full_width = T)
+
+guess_date_format <- function(datestring) {
+    print(paste("date string = ",datestring))
+    guess_formats(as.character(datestring),  c("Ymd","ymd","y0md","y0m0d"), print_matches = TRUE)
+  }
+
+lapply(debug_most_recent_treatment_date$MostRecentTreatmentDate, guess_date_format)
+
+```
+How many patients have had their most recent treatment within the past year when they were viewed in the CDS Recommendation Tool? Note this _may count individual patients more than once_, if the same patient has been viewed in the Recommendation Tool on multiple occasions.
 
 ```{r treatment-past-year}
 # How many patients have had treatment in the past year?
@@ -1120,7 +1216,7 @@ no_treatment_summary <- treatment_entries %>%
             mean_days = NA)
 
 treatment_total <- tibble(
-  HasTreatmentInLastYear = "Total",
+  HasTreatmentInLastYear = "Total Current Patient Views",
   count = nrow(treatment_entries),
   percent = percent(1),
   mean_days = NA
@@ -1133,7 +1229,9 @@ treatment_past_year_summary <- rbind(
   treatment_total
 )
 
-kable(treatment_past_year_summary, col.names = c("Last Treatment Was Within Past Year","Count","Percent","Mean Days Since Treatment"), align='l', caption="<h1>Most Recent Treatment Summary</h1>") %>%
+export_csv_file(treatment_past_year_summary,"treatment_past_year_summary.csv")
+
+kable(treatment_past_year_summary, col.names = c("Last Treatment Was Within Past Year","Count","Percent","Mean Days Since Treatment"), align='l', caption="<h1>Most Recent Treatment Summary (All Patient Views)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
   
 ```
@@ -1141,7 +1239,7 @@ kable(treatment_past_year_summary, col.names = c("Last Treatment Was Within Past
 # Treatment after High Grade Histology or Cancer
 
 The CDS considers "High Grade" histology results of CIN2, Histologic CIN3, HSIL-unspecified, AIS and Histologic Cancer.
-Patients with high grade biopsy results should have immediate follow-up treatment.
+Patients with high grade biopsy results should have immediate follow-up treatment. This table only lists patients with a high grade result who did have subsequent treatment. 
 
 What is the time in days from when a patient has a high grade histology result to when they have a treatment?
  
@@ -1198,7 +1296,9 @@ if (nrow(high_grade_biopsy_treatment) > 0)  {
     max_days   = max(high_grade_biopsy_treatment$days_until_treatment)
   )
   
-  kable(high_grade_biopsy_treatment_summary, col.names = c("Patients","Mean Days","Min Days","Max Days"), align='l', caption="<h1>Days from High Grade Histology to Treatment</h1>") %>%
+  export_csv_file(high_grade_biopsy_treatment_summary,"high_grade_biopsy_treatment_summary.csv")
+  
+  kable(high_grade_biopsy_treatment_summary, col.names = c("Patients","Mean Days","Min Days","Max Days"), align='l', caption="<h1>Days from High Grade Histology to Treatment (All Patient Views)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
 } else {
   cat("Unable to display high grade histology to treatment - No results found.")
@@ -1228,8 +1328,10 @@ if (nrow(high_grade_treatment) > 0)  {
     min_days   = min(high_grade_treatment$days_since_high_grade_treatment),
     max_days   = max(high_grade_treatment$days_since_high_grade_treatment)
   )
-  
-  kable(high_grade_treatment_summary, col.names = c("Patients","Mean Days","Min Days","Max Days"), align='l', caption="<h1>Days Since Treatment for High Grade Histology Or Cytology</h1>") %>%
+
+  export_csv_file(high_grade_treatment_summary,"high_grade_treatment_summary.csv")
+
+  kable(high_grade_treatment_summary, col.names = c("Patients","Mean Days","Min Days","Max Days"), align='l', caption="<h1>Days Since Treatment for High Grade Histology Or Cytology (All Patient Views)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)
 } else {
   cat("Unable to display days since treatment for high grade histology or cytology- No results found.")
@@ -1293,33 +1395,42 @@ rec_counts$mgmt_recs_def <- nrow(management_recs_notoggle_tbl)
 # Note it is possible to have a screening recommendation AND a management recommendation
 # if the patient is symptomatic. 
 screening_recs_all_tbl <- logdata_pathways %>%
-  filter(mgmt_hasRecommendation == FALSE, scrn_hasRecommendation == TRUE) %>%
+  filter(scrn_hasRecommendation == TRUE) %>%
   left_join(logdata_average_risk) %>%
   mutate(recommendationDate = scrn_recommendationDate)
 
 screening_recs_notoggle_tbl <- screening_recs_all_tbl %>%
   filter(isToggleChanged == FALSE)
 
+no_recs_all <- logdata_pathways %>%
+  filter(mgmt_hasRecommendation == FALSE & scrn_hasRecommendation == FALSE)
+
+no_recs_all_notoggle <- no_recs_all %>%
+  filter(isToggleChanged == FALSE)
+
 rec_counts$scrn_recs_all <- nrow(screening_recs_all_tbl)
 rec_counts$scrn_recs_def <- nrow(screening_recs_notoggle_tbl)
 
 rec_counts_tbl <- tibble(
-  cols=c("Management Recommendations", "Screening Recommendations","Total","Management Recommendations","Screening Recommendations","Total"),
-  count = c(rec_counts$mgmt_recs_all, rec_counts$scrn_recs_all, rec_counts$recs_all, rec_counts$mgmt_recs_def, rec_counts$scrn_recs_def, rec_counts$recs_def),
-  pct = percent(count/rec_counts$recs_all, accuracy = 0.1)
+  cols=c("Management Recommendations", "Screening Recommendations","No Recommendation","Total","Management Recommendations","Screening Recommendations","No Recommendation","Total"),
+  count = c(rec_counts$mgmt_recs_all, rec_counts$scrn_recs_all, nrow(no_recs_all), rec_counts$recs_all, rec_counts$mgmt_recs_def, rec_counts$scrn_recs_def, nrow(no_recs_all_notoggle), rec_counts$recs_def),
+  percent = percent(count/rec_counts$recs_all, accuracy = 0.1)
 )
+
+export_csv_file(rec_counts_tbl,"rec_counts_tbl.csv")
+
 kable(rec_counts_tbl,  col.names = c("Pathway","Count","% of All Entries"), align='l',caption="<h1>Pathway Recommendation Counts for All Entries</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
-  pack_rows("All Entries", 1, 3) %>%
-  pack_rows("Default Recommendations without Toggle", 4,6)
+  pack_rows("All Entries", 1, 4) %>%
+  pack_rows("Default Recommendations without Toggle", 5,8)
 ```
 
 
-**Note**: If the counts for "all entries" are larger than for "default" that means that the toggle switches have been used when viewing a patient in the Recommendation Tool. Switching a toggle switch to "on" and back to "off" will cause two log entries to be generated. "Default" means the recommendation was generated without using any toggle switches, but can still include repeat viewings of the same patient in the Recommendation Tool.
+**Note**: If the counts for "All Entries" are larger than "Default" that means that the toggle switches have been used when viewing a patient in the Recommendation Tool. Switching a toggle switch to "on" and back to "off" will cause two log entries to be generated. "Default" means the recommendation was generated without using any toggle switches, but can still include repeat viewings of the same patient in the Recommendation Tool on different times or dates. 
 
 ## Screening Pathway
 
-The Screening pathway includes recommendations arranged by special groups. We can summarize which groups produced screening recommendations for patients. These are across all log entries.
+The Screening pathway includes recommendations arranged by special groups. We can summarize which groups produced screening recommendations for patients. These are across all log entries. 
 
 ```{r screening-rec-groups}
 
@@ -1330,12 +1441,18 @@ The Screening pathway includes recommendations arranged by special groups. We ca
 # Count by groups
 screening_groups_tbl <- screening_recs_all_tbl %>%
   count(scrn_recommendationGroup)
-kable(screening_groups_tbl,  align='l', col.names = c('Group','Count'), caption="<h1>Screening Groups (All log entries)</h1>") %>%
+
+kable(screening_groups_tbl,  align='l', col.names = c('Group','View Count'), caption="<h1>Screening Groups (All log entries)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T)
 
 # Count by recommendation and group
-screening_rec_group_tbl <- screening_recs_all_tbl %>% group_by(scrn_recommendation,scrn_recommendationGroup) %>% summarize(Count = n())
-kable(screening_rec_group_tbl,  align='l', col.names = c('Recommendation',  'Group','Count'), caption="<h1>Screening Recommendations (All log entries)</h1>") %>%
+screening_rec_group_tbl <- screening_recs_all_tbl %>%
+  group_by(scrn_recommendation,scrn_recommendationGroup) %>%
+  summarize(Count = n())
+
+export_csv_file(screening_rec_group_tbl, "screening_rec_group_tbl.csv")
+
+kable(screening_rec_group_tbl,  align='l', col.names = c('Recommendation',  'Group','View Count'), caption="<h1>Screening Recommendations (All log entries)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T)
 
 
@@ -1352,6 +1469,8 @@ screening_recs_by_patient <- screening_recs_notoggle_tbl %>%
 screening_recs_by_type <- screening_recs_by_patient %>%
   group_by(scrn_recommendation, scrn_recommendationGroup) %>%
   summarize(patients = n())
+
+export_csv_file(screening_recs_by_type,"screening_recs_by_type.csv")
 
 kable(screening_recs_by_type,  align='l', col.names = c('Recommendation',  'Group','Patient Count'), caption="<h1>Screening Recommendations (Unique Patients)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T)  
@@ -1374,6 +1493,8 @@ if (nrow(screening_under30_by_patient) > 0)  {
   screening_under30_by_type <- screening_under30_by_patient %>%
     group_by(scrn_recommendation, scrn_recommendationGroup) %>%
     summarize(patients = n())
+
+  export_csv_file(screening_under30_by_type,"screening_under30_by_type.csv")
   
   kable(screening_under30_by_type,  align='l', col.names = c('Recommendation',  'Group','Patient Count'), caption="<h1>Under 30 Screening Recommendations (Unique Patients)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)  
@@ -1384,8 +1505,8 @@ if (nrow(screening_under30_by_patient) > 0)  {
 
 ## Over Age 65 Screening
 Which patients are over the age of 65 and are considered adequately screened?
-The CDS Recommendation tool considers adequately screened patients who have had three negative cytology tests s or two negative HPV tests within the past 5 years.
-Patients who are adequately screened may discontinue screening after age 65.
+The CDS Recommendation tool considers adequately screened patients who have had **three negative cytology tests** or **two negative HPV tests** within the past 5 years.
+Patients who are adequately screened may discontinue screening after age 65. This counts unique patients age 65 or older at the time of the most recent viewing in the CDS Dashboard. 
 
 ```{r age65-adequate}
 screening_age65 <- screening_recs_notoggle_tbl %>%
@@ -1396,6 +1517,17 @@ if (nrow(screening_age65) > 0)  {
   screening_age65 <- screening_age65 %>%
     group_by(AdequatelyScreened) %>%
     summarize(count = n(), percent = percent(count / nrow(screening_age65), accuracy = 0.1))
+  
+
+  screening_age65_total <- tibble(
+    AdequatelyScreened = "Total Patients Age 65 and Older",
+    count = nrow(screening_age65),
+    percent = "100.0%"
+  )
+
+  screening_age65 <- rbind(screening_age65, screening_age65_total)  
+  
+  export_csv_file(screening_age65,"adequate_screening_age65.csv")
   
   kable(screening_age65,  align='l', col.names = c('Adequately Screened',  'Count','%'), caption="<h1>Age 65 and older with Adequate Screening (Unique Patients)</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T)  
@@ -1429,20 +1561,58 @@ management_data_all <- management_recs_all_tbl %>%
 management_pathway_recs <- management_data_all %>%
   select(id,Pathway, Group = mgmt_recommendationGroup, Recommendation = mgmt_recommendation)
 
-management_pathway_plot <- management_pathway_recs %>% ggplot(aes(x = Pathway, fill=Recommendation, )) +
+management_pathway_recs_summary <- management_pathway_recs %>%
+  group_by(Pathway, Recommendation) %>%
+  summarize(count = n()) %>%
+  mutate(percent = percent(count/sum(count), accuracy = 0.1))
+
+management_pathway_plot <- management_pathway_recs %>%
+  ggplot(aes(x = Pathway, fill=Recommendation, )) +
   geom_bar(position="stack") +
-  ggtitle("Recommendation Count by Management Pathway") +
+  ggtitle("Recommendation Count by Management Pathway (All Entries)") +
   xlab("Management Pathway") + 
-  ylab("Recommendation Count")
+  ylab("Recommendation Count") +
+  scale_fill_paletteer_d("ggthemes::Tableau_20")
+
 management_pathway_plot
+
+mpc <- management_pathway_recs_summary %>%
+  group_by(Pathway) %>%
+  summarize(n=n()) %>%
+  mutate(tot = cumsum(n))
+
+export_csv_file(management_pathway_recs_summary,"management_pathway_recs_summary.csv")
+
+kable((management_pathway_recs_summary %>% ungroup() %>% select(-Pathway)), align='l', col.names = c("Recommendation","Count","%"), caption="<h1>Management Recommendations Summary (All Entries)</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("Common Abnormality", 1, mpc[[1,3]]) %>%
+  pack_rows("Rare Abnormality", mpc[[1,3]]+1, mpc[[2,3]]) %>%
+  pack_rows("Special Population", mpc[[2,3]]+1, nrow(management_pathway_recs_summary))
 ```
-This chart shows the distribution of recommendations by the three main management pathways. Individual breakdowns by specific pathways will follow. 
+
+# Management Pathway Recommendation Groups
+
+Recommendations from the three management pathways are associated with guideline recommendation groups. The group names here are for specific parts of the CDS logic which generated the recommendation. 
 
 ```{r}
-management_pathway_group_tbl <- management_pathway_recs %>% group_by(Pathway,Group) %>% summarize(Count = n())
+management_pathway_group_tbl <- management_pathway_recs %>%
+  group_by(Pathway,Group) %>%
+  summarize(count = n()) %>%
+  mutate(percent = percent(count/sum(count), accuracy = 0.1))
 
-kable(management_pathway_group_tbl,  align='l', col.names = c('Pathway',  'Group','Recommendation Count'),caption="<h1>Management Recommendations Summary</h1>") %>%
-  kable_styling(bootstrap_options = c("striped"), full_width = T)
+mpc <- management_pathway_group_tbl %>%
+  group_by(Pathway) %>%
+  summarize(n=n()) %>%
+  mutate(tot = cumsum(n))
+
+export_csv_file(management_pathway_group_tbl,"management_pathway_groups_summary.csv")
+
+kable((management_pathway_group_tbl %>% ungroup() %>% select(-Pathway)),  align='l', col.names = c(  'Group','Count','Percent'),caption="<h1>Management Recommendations Summary (All Entries)</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
+  pack_rows("Common Abnormality", 1, mpc[[1,3]]) %>%
+  pack_rows("Rare Abnormality", mpc[[1,3]]+1, mpc[[2,3]]) %>%
+  pack_rows("Special Population", mpc[[2,3]]+1, nrow(management_pathway_group_tbl))
+  
 
 ```
 
@@ -1455,6 +1625,8 @@ management_rec_group_tbl <- management_pathway_recs %>%
   summarize(Count = n()) %>% 
   arrange(Recommendation, desc(Count))
 
+export_csv_file(management_rec_group_tbl,"mangement_recommendation_counts_by_group.csv")
+
 kable(management_rec_group_tbl,  align='l', col.names = c('Recommendation',  'Group','Count'), caption="<h1>Management Recommendation Counts by Group</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T)
 ```
@@ -1465,19 +1637,33 @@ The CDS pathway for special populations include guideline recommendations for se
 
 ```{r special-populations}
 # What is the count of recommendations by population group?
-special_population_groups <- c("Patients with Histologic Cancer","Patients Younger than 25","Pregnant Patients","Immunosuppressed Patients","Managing Patients After Hysterectomy")
+special_population_group_names <- c("Patients with Histologic Cancer","Patients Younger than 25","Pregnant Patients","Immunosuppressed Patients","Managing Patients After Hysterectomy")
+
+special_population_groups <- c("Histologic Cancer","Younger Than 25 (K.1.3)","Younger Than 25 (K.1.4)","Younger Than 25 (K.1.1)","Pregnant (K.2)","Immunosuppressed (K.3)","Hysterectomy (K.4)")
+
+special_population_recs <- logdata_pathways_notoggle %>%
+  filter(mgmt_recommendationGroup %in% special_population_groups) %>%
+  left_join(logdata_special_population) 
+special_population_recs_summary <- special_population_recs %>%
+  group_by(mgmt_recommendation,mgmt_recommendationGroup) %>%
+  summarize(count = n()) %>% 
+  arrange(mgmt_recommendation, desc(count))
 # Get the list of special population recommendations non-toggle. This is just the count of how many times the CDS activated a special population recommendation. Can this be filtered
 # to the most recent log entry per patient per day?
 # Then add in the immunosuppressed and pregnant toggle recommendations. This is just the count of how many times the CDS triggered the recommendation based on the toggle.
 # Then just filter to the Most Recent unique patient entry. This is the 'current' recommendation from special population.
 # Show by WhichPopulationMadeTheRecommendation with sub-group counts.
+
+export_csv_file(special_population_recs_summary,"special_populations_recs_by_group.csv")
+kable(special_population_recs_summary,  align='l', col.names = c('Recommendation',  'Group','Count'), caption="<h1>Management Recommendation Counts for Special Populations (All Patient Views)</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T)
 ```
 
 
 
-## Risk Table Recommendations
+# Risk Table Recommendations
 
-The recommendations generated in the Common Abnormality pathway includes those produced by the Risk Tables. We can count the times a recommendation was produced from the Risk Tables. This is a specific subset of Management guidelines, and does not represent the full scope of possible recommendations. 
+The recommendations generated in the Common Abnormality pathway includes those produced by the Risk Tables. These recommendations are more general purpose in nature, based on the patient's current and previous test results. Patients will receive a recommendation from one of the risk tables because they have not met the criteria for a more specific recommendation, such as from the Special Population or Rare Abnormality pathways.  
 
 ```{r}
 # Table 3 Row lookup does not return referring HPV and Cytology as result, so we coalesce columns for this.
@@ -1488,6 +1674,7 @@ The recommendations generated in the Common Abnormality pathway includes those p
 # "Reflex Cytology" still gives WhichTableMadeTheRecommendation == 1, but action == ""
 # so that needs to be filtered out.
 management_risk_table_recs <- management_data_all |>
+  filter(isToggleChanged == FALSE) %>%
   distinct(patientReference, mgmt_recommendationDate, mgmt_recommendation, mgmt_recommendationGroup, .keep_all = TRUE) %>%
   left_join(logdata_relevant_row) %>%
   left_join(logdata_collate) %>%
@@ -1496,12 +1683,14 @@ management_risk_table_recs <- management_data_all |>
   filter(!is.na(action),
          action != "",
          !is.na(WhichTableMadeTheRecommendation),
-         mgmt_recommendation != "Hysterectomy",
-         mgmt_recommendationGroup != "Immunosuppressed (K.3)",
-         mgmt_recommendationGroup != "Reflex Cytology")
+         mgmt_recommendationGroup %in% c("General Screening (Table 1)","Surveillance (Table 2)","Colposcopy Results (Table 3)","Post Colposcopy (Table 4)","Post Treatment (Table 5)")
+  )
+         
 
-management_risk_table_recs_plot <- management_risk_table_recs %>% ggplot(aes(x=TableRecommendation)) +
+management_risk_table_recs_plot <- management_risk_table_recs %>%
+  ggplot(aes(x=TableRecommendation)) +
   ggtitle("Risk Table Recommendations") +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5, size = 3)+
   ylab("Count of Recommendations") +
   xlab("Risk Table Recommendation") +
   geom_bar(fill = "#4492da", width = 0.5)
@@ -1517,14 +1706,18 @@ management_risk_group_tbl <- management_risk_table_recs %>%
   arrange(TableRecommendation, desc(count))
 
 management_risk_group_tbl <- janitor::adorn_totals(management_risk_group_tbl, where="row")
+management_risk_group_tbl[nrow(management_risk_group_tbl),4] = "100%"
 
-kable(management_risk_group_tbl,  align='l', col.names = c('Recommendation','Group','Count','Percent'), caption="<h1>Risk Table Recommendation Counts</h1>") %>%
+export_csv_file(management_risk_group_tbl,"risk_table_recommendation_counts.csv")
+
+kable(management_risk_group_tbl,  align='l', col.names = c('Recommendation','Group','Count','Percent'), caption="<h1>Risk Table Recommendation Counts (All Patient Views)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T)
 ```
 
 # Most Recent Cytology and HPV for Risk Table Recommendations
 The risk table-based recommendations are based on current HPV and Cytology results. 
 For patients who received a recommendation from the risk tables, what was their most recent cytology and HPV results?
+This _may count individual patients more than once_, if the same patient has been viewed in the Recommendation Tool on multiple occasions. 
 
 ```{r}
 risk_table_cyto <- management_risk_table_recs %>%
@@ -1553,7 +1746,10 @@ all_risk_table <- tibble(
   percent = percent(1)
 )
 risk_table_cyto_hpv_summary <-  bind_rows(all_risk_table, risk_table_cyto, risk_table_hpv)
-kable(risk_table_cyto_hpv_summary,  col.names = c("Result","Count","%"), align='l', caption="<h1>Current Cytology and HPV Results</h1>") %>%
+
+export_csv_file(risk_table_cyto_hpv_summary,"risk_table_current_cyto_hpv_results.csv")
+
+kable(risk_table_cyto_hpv_summary,  col.names = c("Result","Count","%"), align='l', caption="<h1>Current Cytology and HPV Results For Risk Table Recommendations (All Patient Views)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("All Results", 1, 1) %>%
   group_rows("By Cytology Result", 2, 1+nrow(risk_table_cyto)) %>%
@@ -1588,7 +1784,11 @@ all_risk_table <- tibble(
   percent = percent(1)
 )
 risk_table_biopsy_summary <-  bind_rows(all_risk_table,risk_table_most_recent_biopsy_count,risk_table_second_most_recent_biopsy_count)
-kable(risk_table_biopsy_summary,  col.names = c("Result","Count","%"), align='l', caption="<h1>Biopsy Results</h1>") %>%
+
+export_csv_file(risk_table_most_recent_biopsy_count,"risk_table_most_recent_biopsy_count.csv")
+export_csv_file(risk_table_second_most_recent_biopsy_count,"risk_table_second_most_recent_biopsy_count.csv")
+
+kable(risk_table_biopsy_summary,  col.names = c("Result","Count","%"), align='l', caption="<h1>Biopsy Results (All Patient Views)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   group_rows("Most Recent Biopsy Result", 2, 1+nrow(risk_table_most_recent_biopsy_count)) %>%
   group_rows("Second Most Recent Biopsy Result", 2+nrow(risk_table_most_recent_biopsy_count), 1+nrow(risk_table_most_recent_biopsy_count)+nrow(risk_table_second_most_recent_biopsy_count))
@@ -1597,15 +1797,17 @@ kable(risk_table_biopsy_summary,  col.names = c("Result","Count","%"), align='l'
 # Risk Table Recommendations by Immediate CIN3+ Risk
 Risk Table recommendations are based on the estimated CIN3+ risk. If the risk is 4% or greater, immediate management via colposcopy or treatment is indicated.
 If the immediate risk is less than 4%, the 5-year CIN 3+ risk is examined to determine whether patients should return in 1, 3, or 5 years.
-If the immedaite risk for CIN 3+ is 60% or greater, expedited treatment without confirmatory biopsy is recommended.
+If the immediate risk for CIN 3+ is 60% or greater, expedited treatment without confirmatory biopsy is recommended.
 
 ```{r cin3-risk-immediate}
 risk_table_risk_summary <- management_risk_table_recs %>%
   filter(WhichTableMadeTheRecommendation != 3) %>%
   group_by(action, riskNow, risk5yr) %>% count() %>%
-  mutate(percent = percent(n / nrow(management_risk_table_recs)))
+  mutate(percent = percent(n / nrow(management_risk_table_recs), accuracy=0.1))
 
-kable(risk_table_risk_summary,  col.names = c("Recommendation","CIN 3+ Immediate Risk %", "CIN 3+ 5yr Risk %", "Count","%"), align='l', caption="<h1>CIN 3+ Risks by Recommended Action</h1>") %>%
+export_csv_file(risk_table_risk_summary,"risk_table_recommendation_cin3_risk.csv")
+
+kable(risk_table_risk_summary,  col.names = c("Recommendation","CIN 3+ Immediate Risk %", "CIN 3+ 5yr Risk %", "Count","%"), align='l', caption="<h1>CIN 3+ Risks by Recommended Action (All Patient Views)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) 
 
 ```
@@ -1622,58 +1824,90 @@ risk_table_biopsy_risk_summary <- management_risk_table_recs %>%
   count(name="count") %>%
   ungroup() %>%
   mutate(percent = percent(count / sum(count), accuracy = 0.1))
-# risk_table_biopsy_risk_summary
 
-kable(risk_table_biopsy_risk_summary,  col.names = c("Recommendation","CIN 3+ 1yr Risk %", "CIN 3+ 5yr Risk %", "Count","%"), align='l', caption="<h1>CIN 3+ Risks by Recommended Action for Biopsy Results</h1>") %>%
+export_csv_file(risk_table_biopsy_risk_summary,"risk_table_biopsy_cin3_risk.csv")
+
+kable(risk_table_biopsy_risk_summary,  col.names = c("Recommendation","CIN 3+ 1yr Risk %", "CIN 3+ 5yr Risk %", "Count","%"), align='l', caption="<h1>CIN 3+ Risks by Recommended Action for Biopsy Results (All Patient Views)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) 
 
 ```
+
 # Expedited Treatment
-What are the histology, HPV and cytology results associated with patients who received a recommendation for expedited treatment?
+Expedited Treatment (without preceding colposcopy/biopsy) is preferred for patients with an immediate CIN 3+ risk of 60% or greater.
+How many patients received a recommendation for exedited treatment?
+
 
 ```{r expedited-treatment}
 
-# Table 3 recommendations for expedited treatment for CIN2, CIN3, AIS, Cancer
-expedited_treatment_table3 <- management_risk_table_recs %>%
-  filter(action == "Treatment", WhichTableMadeTheRecommendation == 3) %>%
-  select(id, patientReference, timeRequestSent, mgmt_recommendation, mgmt_recommendationGroup, WhichTableMadeTheRecommendation,
-         TableRecommendation, action, risk_table_cyto, risk_table_hpv, biopsy, riskNow, risk5yr) %>%
-  group_by(result = biopsy, riskNow,risk5yr) %>%
-  summarize(count = n()) %>%
-  ungroup()
 
 # Table 1 recommendation for expedited treatment for HPV16+/HSIL+
 # This includes rarely screened patients who get guidance for expedited treatment as
 # that also generates the recommendation from table 1
 expedited_treatment_table1 <- management_risk_table_recs %>%
-  filter(action == "Treatment", WhichTableMadeTheRecommendation == 1) %>%
-  select(id, patientReference, timeRequestSent, mgmt_recommendation, mgmt_recommendationGroup, WhichTableMadeTheRecommendation, TableRecommendation, action, risk_table_cyto, risk_table_hpv, biopsy,riskNow, risk5yr) %>%
+  filter(TableRecommendation == "Treatment", WhichTableMadeTheRecommendation == 1) %>%
+#  select(id, patientReference, timeRequestSent, mgmt_recommendation, mgmt_recommendationGroup, TableRecommendation, risk_table_cyto, risk_table_hpv) %>%
   unite(result, risk_table_hpv, risk_table_cyto, sep = "/", remove = FALSE) %>%
-  group_by(result, riskNow, risk5yr) %>%
+  group_by(result) %>%
   summarize(count = n()) %>%
-  ungroup()
+  mutate(group = "General Screening (Table 1)") 
 
 # Need to find patients who got recommendation for expedited treatment from ManageCommonAbnormality 
 # which did NOT cause a recommendation from the risk tables
 # This is returned in 5.O.G.1.1, 5.O.G.1.2, 5.O.G.2.1 and 5.O.G.2.2
-expedited_treatment_section_g <- management_data_all %>%
+expedited_treatment_section_g <- management_recs_notoggle_tbl %>%
   filter(mgmt_hasRecommendation == TRUE, mgmt_recommendation == "Treatment", mgmt_recommendationGroup == "Management of HPV16 and HPV18 Positive Results") %>%
   left_join(logdata_collate) %>%
   filter(MostRecentHpvResult == "HPV16+", MostRecentCytologyCotestResult == "HSIL+") %>%
   unite(result, MostRecentHpvResult, MostRecentCytologyCotestResult, sep = "/", remove = FALSE) %>%
   group_by(result) %>%
-  summarize(count = n())
+  summarize(count = n()) %>%
+  mutate(group = "Management of HPV16 and HPV18 Positive Results")
 
-if (nrow(expedited_treatment_section_g) == 1) {
-  g_count = expedited_treatment_section_g$count[]
-} else {g_count = 0}
+expedited_treatment_guidance <- management_recs_notoggle_tbl %>%
+  filter(mgmt_hasRecommendation == TRUE, mgmt_recommendation == "Treatment", mgmt_recommendationGroup == "Guidance for Expedited Treatment") %>%
+  left_join(logdata_collate) %>%
+  left_join(logdata_rare_abnormality) %>%
+  unite(result, MostRecentHpvResult, MostRecentCytologyCotestResult, sep = "/", remove = FALSE) %>%
+  group_by(result) %>%
+  summarize(count = n()) %>%
+  mutate(group = "Guidance for Expedited Treatment") 
 
-# Add this count to the count of table 1 results
-expedited_treatment_table1[1,]$count <- expedited_treatment_table1[1,]$count + g_count
-
-expedited_treatment_summary <- rbind(expedited_treatment_table3, expedited_treatment_table1) %>%
+expedited_treatment_summary <- rbind(expedited_treatment_table1, expedited_treatment_section_g, expedited_treatment_guidance) %>%
+  select(group, result, count) %>%
   mutate(percent = percent(count / sum(count), accuracy = 0.1))
-kable(expedited_treatment_summary,  col.names = c("Result", "CIN 3+ Immediate Risk %", "CIN 3+ 5yr Risk %","Count","%"), align='l', caption="<h1>Diagnostic Results for Expedited Treatment</h1>") %>%
+
+kable(expedited_treatment_summary,  col.names = c("Recommendation Group", "Result","Count","%"), align='l', caption="<h1>Diagnostic Results for Expedited Treatment (All Patient Views)</h1>") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = T) 
+```
+
+# Treatment
+How many patients received a recommendation for Treatment and what are the most recent histology, HPV and cytology results?
+
+```{r any-treatment}
+# Management recommendations for treatment
+treatment_recs <- management_recs_notoggle_tbl %>%
+  filter(mgmt_recommendation %in% c("Treatment","Repeat Excision","Colposcopy or Treatment","Surveillance or Treatment")) %>%
+  left_join(logdata_collate) %>%
+  left_join(logdata_rare_abnormality) %>%
+  select(id, patientReference, timeRequestSent, mgmt_recommendation, mgmt_recommendationGroup, MostRecentBiopsyResult, MostRecentHpvResult, MostRecentCytologyCotestResult) %>%
+  unite(cotestresult, MostRecentHpvResult, MostRecentCytologyCotestResult, sep = "/", remove = FALSE) %>%
+  group_by(mgmt_recommendation, mgmt_recommendationGroup) %>%
+  summarize(count = n()) %>%
+  ungroup() %>%
+  mutate(percent = percent(count / sum(count), accuracy = 0.1))
+
+treatment_recs_total <- tibble(
+  mgmt_recommendation = "Total Treatment Recommendations",
+  mgmt_recommendationGroup = "",
+  count = sum(treatment_recs$count),
+  percent = "100.0%"
+)
+
+treatment_recs_summary <- rbind(treatment_recs, treatment_recs_total)
+
+export_csv_file(treatment_recs_summary,"recommendations_for_treatment.csv")
+
+kable(treatment_recs_summary,  col.names = c("Recommendation","Recommendation Group", "Count","%"), align='l', caption="<h1>Recommendations for Treatment (All Patient Views)</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) 
 ```
 
@@ -1717,6 +1951,8 @@ print(nrow(debug_cotest_results %>% filter(is.na(MostRecentCytologyCotestResult)
 
 cotest_results_age_group <- cotest_results_age_group %>%
   mutate_at(c(3:ncol(cotest_results_age_group)), ~replace(., is.na(.), 0))  
+
+export_csv_file(cotest_results_age_group,"cotest_results_by_age_group.csv")
 
 kable(cotest_results_age_group %>% rename(any_of(cotest_cols)),
     align='l',
@@ -1793,6 +2029,8 @@ mean_all_biopsy_days <- tibble(
 
 biopsy_days_summary <-  bind_rows(mean_all_biopsy_days,biopsy_days_cyto_summary, biopsy_days_hpv_summary)
 
+export_csv_file(biopsy_days_summary,"mean_days_to_biopsy.csv")
+
 kable(biopsy_days_summary,  col.names = c("Result","Days","Count","%"), align='l',caption="<h1>Mean Days to Biopsy after Cotest</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("All Results", 1, 1) %>%
@@ -1829,11 +2067,14 @@ mean_all_cin2cin3_days <- tibble(
 )
 cin2cin3_summary <- rbind(cin2cin3_recent_summary,cin2cin3_previous_summary,mean_all_cin2cin3_days)
 
+export_csv_file(cin2cin3_summary,"mean_days_since_cin2_cin3.csv")
+
 kable(cin2cin3_summary,  col.names = c("Biopsy Result","Count","%","Mean Days since CIN2/CIN3"), align='l',caption="<h1>Mean Days Since CIN2/CIN3 Biopsy</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
   pack_rows("Most Recent Biopsy is CIN2/CIN3",1,nrow(cin2cin3_recent_summary)) %>%
   pack_rows("Second Most Recent Biopsy was CIN2/CIN3", 1+nrow(cin2cin3_recent_summary), nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary)) %>%
   pack_rows("CIN2/CIN3 Result at Any Time", 1+nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary), 1+nrow(cin2cin3_recent_summary) + nrow(cin2cin3_previous_summary))
+  
 ```
 
 ## Days Since Most Recent Biopsy
@@ -1875,6 +2116,8 @@ mean_all_biopsy_days <- tibble(
 
 biopsy_days_summary <- rbind(biopsy_days,mean_all_biopsy_days,no_biopsy_days) %>%
   select(MostRecentBiopsyResult,count,percent,mean_days)
+
+export_csv_file(biopsy_days_summary,"mean_days_since_biopsy.csv")
 
 kable(biopsy_days_summary,  col.names = c("Result","Count","%","Mean Days"), align='l',caption="<h1>Mean Days Since Most Recent Biopsy</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>%
@@ -1918,27 +2161,26 @@ total_hpv_biopsy_results <- tibble(
 )
 
 hpv_biopsy_days_summary <- rbind(hpv_biopsy_results,total_hpv_biopsy_results)
-
+export_csv_file(hpv_biopsy_days_summary,"biopsy_after_most_recent_hpv_days.csv")
 kable(hpv_biopsy_days_summary,  col.names = c("HPV Result","Biopsy Result","Count","%","Mean Days"), align='l',caption="<h1>Most Recent Biopsy after Most Recent HPV</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) %>% 
   pack_rows("Total All HPV-Biopsy",1+nrow(hpv_biopsy_results),1+nrow(hpv_biopsy_results))
 
-
 ```
 
-## HPV-Negative ASC-US After History of HPV-Positive ASC-US
+## HPV-/ASC-US After History of HPV-Positive ASC-US
 
 This scenario looks at patients with the following history of persistent ASC-US:
 
-| HPV          | Cytology    | Date      | Sequence           |
-|--------------|-------------|-----------|--------------------|
-|HPV (-)       | ACS-US      | Today.    | Most Recent Cotest |
-|HPV (+) Other | ASC-US      | ~12-18 months ago | Previous Cotest |
-|HPV (+) Other | ASC-US      | ~18-36 months ago | Second Previous Cotest |
+| HPV   | Cytology    | Sequence           |
+|-------|-------------|--------------------|
+|HPV-   | ACS-US      | Most Recent Cotest |
+|HPV+   | Any         | Previous Cotest    |
+|HPV+   | Any         | Second Previous Cotest |
 
-The patient has a history of ASC-US (3 tests in the past ~3 years). They had prior HPV-positive results but now their current result is HPV-negative. This is a case where colposcopy was previously recommended but not completed. (cf. (2019 ASCCP Risk-Based Management Consensus Guidelines: Updates through 2023, J Low Genit Tract Dis 2024;28: 3-6), Errata Section 4)
+The patient has a current result of HPV-positive with ASC-US. Their two previous HPV results were both positive, and colposcopy was previously recommended but not completed. (cf. (2019 ASCCP Risk-Based Management Consensus Guidelines: Updates through 2023, J Low Genit Tract Dis 2024;28: 3-6), Errata Section 4)
 
-How many patients were observed with HPV-/ASC-US preceded by HPV+/ASC-US? (With no biopsy or treatment since the second most recent cotest?)
+How many patients were observed with HPV-negative/ASC-US preceded by two previous HPV-positive results without completed colposcopy (or treatment)?
 
 ```{r hpv-ascus-history}
 
@@ -2044,6 +2286,7 @@ if (nrow(curr_hpv_neg_ascus_summary) > 0)  {
 } else {
   cat("No log entries found for current HPV-/ASC-US")
 }
+export_csv_file(curr_hpv_neg_ascus_summary,"hpv_neg_ascus_summary.csv")
 
 if (nrow(curr_hpv_neg_ascus_no_treat_bio_summary) > 0)  {
   kable(curr_hpv_neg_ascus_no_treat_bio_summary,  col.names = c("HPV","Cytology","Count","%","Mean Days Since Most Recent Cotest"), align='l',caption="<h1>Most Recent Cotest is HPV-Negative / ASC-US (Without following Biopsy/Treatment)</h1>") %>%
@@ -2051,21 +2294,24 @@ if (nrow(curr_hpv_neg_ascus_no_treat_bio_summary) > 0)  {
 } else {
   cat("No log entries found for current HPV-/ASC-US without following Treatment or Biopsy")
 }
+export_csv_file(curr_hpv_neg_ascus_no_treat_bio_summary,"hpv_neg_ascus_no_treatment_summary.csv")
+
 ```
 
-## HPV+/ASC-US followed by HPV-/ASC-US
-How many patients had a costest result of HPV-positive (any type) with ASC-US, followed by HPV-negative with ASC-US?
+## HPV+ followed by HPV-/ASC-US
+How many patients had a costest result of HPV-positive (any type) without biopsy, followed by HPV-negative with ASC-US?
 ```{r hpv-ascus2x}
 # Now we want to find patients with:
 # Most Recent HPV-negative/ASC-US 
-# Second Most Recent HPV-Positive / ASC-US
-# No biopsy OR treatment after second most recent Cotest
+# Second Most Recent HPV-Positive
+# No biopsy OR treatment after second most recent Cotest/HPV+
+
 curr_hpv_neg_ascus2x_summary <- curr_hpv_neg_ascus %>%
   filter(age > 25) %>%
   filter(!is.na(SecondMostRecentHpvReportDate)) %>%
   filter(is.na(MostRecentBiopsyReportDate) | (MostRecentBiopsyReportDate < SecondMostRecentHpvReportDate)) %>%
   filter(is.na(MostRecentTreatmentDate) | (MostRecentTreatmentDate < SecondMostRecentHpvReportDate)) %>%
-  filter(SecondMostRecentHpvResult == "HPV-positive", SecondMostRecentCytologyCotestResult == "ASC-US") %>%
+  filter(SecondMostRecentHpvResult %in% c("HPV-positive","HPV16+","HPV16-, HPV18+")) %>%
   filter(mgmt_hasRecommendation == TRUE) %>%
   group_by(mgmt_recommendation, mgmt_recommendationGroup) %>%
   summarize(
@@ -2078,12 +2324,13 @@ if (nrow(curr_hpv_neg_ascus2x_summary) > 0)  {
   kable(curr_hpv_neg_ascus2x_summary,  col.names = c("Recommendation","Group","Count","%","Mean Days Since Most Recent Cotest","Mean Days Since Previous Cotest"), align='l',caption="<h1>HPV+/ASC-US followed by HPV-/ASC-US</h1>") %>%
   kable_styling(bootstrap_options = c("striped"), full_width = T) 
 } else {
-  cat("No log entries found for HPV+/ASC-US followed by HPV-/ASC-US")
+  cat("No log entries found for HPV+ followed by HPV-/ASC-US")
 }
+export_csv_file(curr_hpv_neg_ascus2x_summary,"hpv_ascus_hpv_neg_ascus.csv")
 ```
 
-### HPV-Negative / ASC-US with two prior HPV-positive/ASC-US results
-How many patients were observed with HPV-/ASC-US preceded by two instances of HPV+/ASC-US? (With no biopsy or treatment since the third most recent cotest?)
+### HPV-Negative / ASC-US with two prior HPV-positive results
+How many patients were observed with HPV-/ASC-US preceded by two instances of HPV+ (With no biopsy or treatment since the third most recent cotest?)
 
 ```{r hpv-ascus3x-history}
 curr_hpv_neg_ascus3x_summary <- curr_hpv_neg_ascus %>%
@@ -2091,8 +2338,8 @@ curr_hpv_neg_ascus3x_summary <- curr_hpv_neg_ascus %>%
   filter(!is.na(ThirdMostRecentHpvReportDate)) %>%
   filter(is.na(MostRecentBiopsyReportDate) | (MostRecentBiopsyReportDate < ThirdMostRecentHpvReportDate)) %>%
   filter(is.na(MostRecentTreatmentDate) | (MostRecentTreatmentDate < ThirdMostRecentHpvReportDate)) %>%
-  filter(SecondMostRecentHpvResult == "HPV-positive", SecondMostRecentCytologyCotestResult == "ASC-US") %>%
-  filter(ThirdMostRecentHpvResult == "HPV-positive", ThirdMostRecentCytologyCotestResult == "ASC-US") %>%
+  filter(SecondMostRecentHpvResult %in% c("HPV-positive","HPV16+","HPV16-, HPV18+")) %>%
+  filter(ThirdMostRecentHpvResult %in% c("HPV-positive","HPV16+","HPV16-, HPV18+")) %>%
   filter(mgmt_hasRecommendation == TRUE) %>%
   group_by(mgmt_recommendation, mgmt_recommendationGroup) %>%
   summarize(
@@ -2105,6 +2352,8 @@ if (nrow(curr_hpv_neg_ascus3x_summary) > 0) {
   kable(curr_hpv_neg_ascus3x_summary,  col.names = c("Recommendation","Group","Count","%","Mean Days Since Most Recent Cotest","Mean Days Since Previous Cotest","Mean Days Since Second-Previous Cotest"), align='l',caption="<h1>Two HPV+/ASC-US followed by HPV-/ASC-US</h1>") %>%
     kable_styling(bootstrap_options = c("striped"), full_width = T) 
 } else {
-    cat("No log entries found for (HPV+/ASC-US) x2 followed by HPV-/ASC-US")
+    cat("No log entries found for HPV+ x2 followed by HPV-/ASC-US")
 }
+export_csv_file(curr_hpv_neg_ascus3x_summary,"hpv_ascus_x2_hpv_neg_ascus.csv")
+
 ```

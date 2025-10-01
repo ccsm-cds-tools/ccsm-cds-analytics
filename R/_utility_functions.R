@@ -38,3 +38,12 @@ add_commas <-
   {
     format(numbers, big.mark=",", scientific=FALSE, trim=TRUE)
   }
+
+# Wrapper to write the CSV files
+export_csv_file <- 
+  function(data, name)
+  {
+    if (output_csv) {
+      write_csv(data,here(output_directory,name))
+    }
+  }
