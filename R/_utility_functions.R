@@ -47,3 +47,9 @@ export_csv_file <-
       write_csv(data,here(output_directory,name))
     }
   }
+
+# Custom date parsing
+# This method reliably handles malformed date values encountered in the log files
+parse_logdate <- function(datestr) {
+  stringr::str_split(datestr, "T") %>% map_chr(.,1) %>% lubridate::ymd(quiet = TRUE)
+}

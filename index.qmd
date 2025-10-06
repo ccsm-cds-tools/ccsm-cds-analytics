@@ -5,7 +5,7 @@ date-format: D MMMM YYYY
 format: html
 editor: source
 author: Michael Nosal (mnosal@mitre.org)
-version: 0.3.1
+version: 0.3.2
 ---
 
 ```{r setup, include=FALSE}
@@ -17,6 +17,7 @@ source('R/_utility_functions.R')
 base::readRenviron("_environment")
 base::readRenviron("_environment.local")
 # base::readRenviron("_environment.dev")
+
 ```
 
 `r as.Date(now(), format = "%Y-%m-%d")`
@@ -362,8 +363,8 @@ logdata_dashboard <-tidyjson::as_tibble(
     enter_object(message) %>%
       enter_object(payload,DashboardLibrary) %>%
         spread_all %>%
-    mutate(DateOfMostRecentPositiveHpv = date(DateOfMostRecentPositiveHpv),
-           DateOfMostRecentNegativeHpv = date(DateOfMostRecentNegativeHpv))
+    mutate(DateOfMostRecentPositiveHpv = parse_logdate(DateOfMostRecentPositiveHpv),
+           DateOfMostRecentNegativeHpv = parse_logdate(DateOfMostRecentNegativeHpv))
 )
 
 logdata_management_library <- tidyjson::as_tibble(
@@ -380,9 +381,9 @@ logdata_common <- tidyjson::as_tibble(
     enter_object(message) %>%
       enter_object(payload,ManageCommonAbnormality) %>%
         spread_all(recursive = FALSE) %>%
-        mutate(DateOfMostRecentHpvReport = date(DateOfMostRecentHpvReport),
-               DateOfMostRecentPositiveScreeningResult = date(DateOfMostRecentPositiveScreeningResult),
-               DateOfLastKnownCytologyInterpretedAsAscusOrAbove = date(DateOfLastKnownCytologyInterpretedAsAscusOrAbove))
+        mutate(DateOfMostRecentHpvReport = parse_logdate(DateOfMostRecentHpvReport),
+               DateOfMostRecentPositiveScreeningResult = parse_logdate(DateOfMostRecentPositiveScreeningResult),
+               DateOfLastKnownCytologyInterpretedAsAscusOrAbove = parse_logdate(DateOfLastKnownCytologyInterpretedAsAscusOrAbove))
 )
 
 # In the Risk Tables, there are management recommendations which are not associated with specific risk estimates.
@@ -408,12 +409,10 @@ logdata_rare_abnormality <- tidyjson::as_tibble(
     enter_object(message) %>%
       enter_object(payload,ManageRareAbnormality) %>%
         spread_all(recursive = FALSE) %>%
-        mutate(datesplit = stringr::str_split(MostRecentTreatmentDate, "T") %>% map_chr(., 1)) %>%
         mutate(
-          MostRecentTreatmentDate = as.Date(datesplit, optional = TRUE),
-          MRTD_date = date(MostRecentTreatmentDate),
-          TreatmentForHighGradeHistologyOrCytologyDate = as.Date(TreatmentForHighGradeHistologyOrCytologyDate, optional = TRUE),
-          DateOfLastKnownCytologyInterpretedAsAscHInPast5Years = as.Date(DateOfLastKnownCytologyInterpretedAsAscHInPast5Years, optional = TRUE),
+          MostRecentTreatmentDate = parse_logdate(MostRecentTreatmentDate),
+          TreatmentForHighGradeHistologyOrCytologyDate = parse_logdate(TreatmentForHighGradeHistologyOrCytologyDate),
+          DateOfLastKnownCytologyInterpretedAsAscHInPast5Years = parse_logdate(DateOfLastKnownCytologyInterpretedAsAscHInPast5Years)
         )
 )
 
@@ -424,7 +423,7 @@ logdata_special_population <- tidyjson::as_tibble(
     enter_object(message) %>%
       enter_object(payload,ManageSpecialPopulation) %>%
         spread_all(recursive = FALSE) %>%
-        mutate(HighGradeOrCancerHistologyResultsDate = as.Date(HighGradeOrCancerHistologyResultsDate, optional = TRUE))
+        mutate(HighGradeOrCancerHistologyResultsDate = parse_logdate(HighGradeOrCancerHistologyResultsDate))
 )
 
 # Load attributes from ScreeningAverageRisk
@@ -435,9 +434,9 @@ logdata_average_risk <- tidyjson::as_tibble(
       enter_object(payload,ScreeningAverageRiskLibrary) %>%
         spread_all(recursive = FALSE) %>%
         mutate(
-          DateOfMostRecentNilmCytology = as.Date(DateOfMostRecentNilmCytology, optional = TRUE),
-          DateOfMostRecentNegativeCotest = as.Date(DateOfMostRecentNegativeCotest, optional = TRUE),
-          DateOfMostRecentNegativeHpv = as.Date(DateOfMostRecentNegativeHpv, optional = TRUE))
+          DateOfMostRecentNilmCytology = parse_logdate(DateOfMostRecentNilmCytology),
+          DateOfMostRecentNegativeCotest = parse_logdate(DateOfMostRecentNegativeCotest),
+          DateOfMostRecentNegativeHpv = parse_logdate(DateOfMostRecentNegativeHpv))
 )
 
 # Load attributes from CollateManagementData
@@ -448,13 +447,13 @@ logdata_collate <- tidyjson::as_tibble(
       enter_object(payload,CollateManagementData) %>%
         spread_all(recursive = FALSE) %>%
         mutate(
-          MostRecentBiopsyReportDate = as.Date(MostRecentBiopsyReportDate, optional = TRUE),
-          MostRecentCytologyReportDate = as.Date(MostRecentCytologyReportDate, optional = TRUE),
-          DateOfFirstBiopsyAfterMostRecentHpvReport = as.Date(DateOfFirstBiopsyAfterMostRecentHpvReport, optional = TRUE),
-          DateOfMostRecentCytologyBeforeBiopsy = as.Date(DateOfMostRecentCytologyBeforeBiopsy, optional = TRUE),
-          DateOfMostRecentReport = as.Date(DateOfMostRecentReport, optional = TRUE),
-          DateOfLastCervicalPrecancerTreatment = as.Date(DateOfLastCervicalPrecancerTreatment, optional = TRUE),
-          MostRecentCin2orCin3BiopsyDate = as.Date(MostRecentCin2orCin3BiopsyDate, optional = TRUE),
+          MostRecentBiopsyReportDate = parse_logdate(MostRecentBiopsyReportDate),
+          MostRecentCytologyReportDate = parse_logdate(MostRecentCytologyReportDate),
+          DateOfFirstBiopsyAfterMostRecentHpvReport = parse_logdate(DateOfFirstBiopsyAfterMostRecentHpvReport),
+          DateOfMostRecentCytologyBeforeBiopsy = parse_logdate(DateOfMostRecentCytologyBeforeBiopsy),
+          DateOfMostRecentReport = parse_logdate(DateOfMostRecentReport),
+          DateOfLastCervicalPrecancerTreatment = parse_logdate(DateOfLastCervicalPrecancerTreatment),
+          MostRecentCin2orCin3BiopsyDate = parse_logdate(MostRecentCin2orCin3BiopsyDate),
         )
 )
 
@@ -465,7 +464,7 @@ logdata_hpv_dates <- as_tibble (
       enter_object(message,payload,CollateManagementData) %>%
         enter_object(HpvDates) %>%
           gather_array() %>% append_values_string(column.name = "HpvDate") %>%
-    mutate(HpvDate = as.Date(HpvDate, optional = TRUE)) %>%
+    mutate(HpvDate = parse_logdate(HpvDate)) %>%
     select(-document.id)
 )
 ```
@@ -719,8 +718,8 @@ logdata_pathways <-tidyjson::as_tibble(
           scrn_recommendationGroup = jstring('ScreeningLibrary','DecisionAids','recommendationGroup')
         ) %>%
       mutate(
-        mgmt_recommendationDate = date(mgmt_recommendationDate),
-        scrn_recommendationDate = date(scrn_recommendationDate)) %>%
+        mgmt_recommendationDate = parse_logdate(mgmt_recommendationDate),
+        scrn_recommendationDate = parse_logdate(scrn_recommendationDate)) %>%
   select(-document.id)  
 ) %>%
   left_join(logdata_dashboard %>% select(id, age = PatientAge)) %>%
@@ -848,7 +847,7 @@ recent_days_cyto_summary <- current_patient_log_dates %>%
   select(report,included,count,percent,mean_days,mean_nilm_days,mean_ascus_days)
 
 cyto_total <- tibble(
-  report = "Total Current Patient Entries",
+  report = "Total Patient Views",
   included = "",
   count = nrow(current_patient_log_dates),
   percent = "100.0%",
@@ -910,7 +909,7 @@ recent_days_hpv_summary <- current_patient_log_dates %>%
   select(report, included, count, percent, mean_days, mean_hpv_positive_days, mean_hpv_negative_days)
 
 hpv_total <- tibble(
-  report = "Total Current Patient Entries",
+  report = "Total Patient Views",
   included = "",
   count = nrow(current_patient_log_dates),
   percent = "100.0%",
@@ -929,7 +928,7 @@ kable(recent_days_hpv_summary, col.names = c("HPV Report Time","Had Test","Count
 ```
 
 ## Most Recent Positive Screening By Result
-Recent Positive Screening is defined as positive primary HPV _or_ cotest. This does **not** include positive results by cytology alone. Totals _may count individual patients more than once_, if the same patient has been viewed in the Recommendation Tool on multiple occasions. These are the positive screening results from the set of `r nrow(current_patient_log_dates)` current patient entries.
+Recent Positive Screening is defined as positive primary HPV _or_ cotest. This does **not** include positive results by cytology alone. Totals _may count individual patients more than once_, if the same patient has been viewed in the Recommendation Tool on multiple occasions. These are the positive screening results from the set of `r nrow(current_patient_log_dates)` patient views.
 
 ```{r days-positive-screening}
 # Note that cytology without a result gets assigned the result code "ALL" for purposes of risk lookup, so we need to filter this out.
@@ -1014,7 +1013,7 @@ no_treatment_summary <- treatment_entries %>%
             mean_days = NA)
 
 treatment_total <- tibble(
-  HasTreatmentInLastYear = "Total Current Patient Views",
+  HasTreatmentInLastYear = "Total Patient Views",
   count = nrow(treatment_entries),
   percent = percent(1),
   mean_days = NA
@@ -1436,7 +1435,7 @@ kable(special_population_recs_summary,  align='l', col.names = c('Recommendation
 
 # Risk Table Recommendations
 
-The recommendations generated in the Common Abnormality pathway includes those produced by the Risk Tables. These recommendations are more general purpose in nature, based on the patient's current and previous test results. Patients will receive a recommendation from one of the risk tables because they have not met the criteria for a more specific recommendation, such as from the Special Population or Rare Abnormality pathways.  
+The recommendations generated in the Common Abnormality pathway includes those produced by the Risk Tables. These recommendations are more general purpose in nature, based on the patient's current and previous test results. Patients will receive a recommendation from one of the risk tables because they have not met the criteria for a more specific recommendation, such as from the Special Population or Rare Abnormality pathways. This only indicates that these patients had patient histories which caused the CDS to return a recommendation from the more general 'risk table' logic. 
 
 ```{r}
 # Table 3 Row lookup does not return referring HPV and Cytology as result, so we coalesce columns for this.
@@ -1462,7 +1461,7 @@ management_risk_table_recs <- management_data_all |>
 
 management_risk_table_recs_plot <- management_risk_table_recs %>%
   ggplot(aes(x=TableRecommendation)) +
-  ggtitle("Risk Table Recommendations") +
+  ggtitle("Risk Table Recommendations (All Patient Views)") +
   geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5, size = 3)+
   ylab("Count of Recommendations") +
   xlab("Risk Table Recommendation") +
@@ -1475,7 +1474,7 @@ management_risk_table_recs_plot
 management_risk_group_tbl <- management_risk_table_recs %>%
   group_by(TableRecommendation,mgmt_recommendationGroup) %>%
   summarize(count = n()) %>% 
-  mutate(percent = percent(count / nrow(management_risk_table_recs))) %>%
+  mutate(percent = percent(count / nrow(management_risk_table_recs), accuracy = 0.1)) %>%
   arrange(TableRecommendation, desc(count))
 
 management_risk_group_tbl <- janitor::adorn_totals(management_risk_group_tbl, where="row")
@@ -1686,6 +1685,7 @@ kable(treatment_recs_summary,  col.names = c("Recommendation","Recommendation Gr
 
 # HPV and Cytology
 What is the association between the most recent cytology and HPV cotest results by age group?
+Note: "Result Missing" indicates there was no result (conclusion) associated with the diagnostic report at all. "No Result" and "No Result Found" indicates that the diagnostic report had a result but lacked a coded value. "Unknown" indicates the coded value for the result was not a known code.
 
 ```{r hpv-cytology-crosstab}
 # The intent is to compare HPV results with Cytology results
@@ -1695,7 +1695,7 @@ What is the association between the most recent cytology and HPV cotest results 
 
 # Get unique patient default entries (no toggle switches applied)
 # And add collate data (which includes MostRecentCytologyCotestResult and MostRecentHpvResult)
-cotest_cols <- c("Age Group" = "age_group","Most Recent Cytology Cotest Result" = "MostRecentCytologyCotestResult","HPV-" = "HPV-negative","HPV+ Other" = "HPV-positive","HPV16+" = "HPV16+","HPV16-/18+" = "HPV16-, HPV18+","Unknown"="UNK","N/A"="<NA>")
+cotest_cols <- c("Age Group" = "age_group","Most Recent Cytology Cotest Result" = "MostRecentCytologyCotestResult","HPV-" = "HPV-negative","HPV+ Other" = "HPV-positive","HPV16+" = "HPV16+","HPV16-/18+" = "HPV16-, HPV18+","Unknown"="UNK","N/A"="<NA>","No Result"="ALL")
 cotest_results_tbl <- logdata_pathways_notoggle %>%
   left_join(logdata_collate) %>% 
   left_join(logdata_common) %>%
@@ -1703,7 +1703,7 @@ cotest_results_tbl <- logdata_pathways_notoggle %>%
   filter(MostRecentCytologyIsNotACotest == FALSE) %>%
   select(id, patientReference, age, MostRecentCytologyCotestResult, MostRecentHpvResult) %>%
   mutate(MostRecentCytologyCotestResult = ifelse(MostRecentCytologyCotestResult == "UNSAT", "Unsatisfactory", MostRecentCytologyCotestResult)) %>%
-  mutate(MostRecentCytologyCotestResult = ifelse(MostRecentCytologyCotestResult == "ALL", "Unknown/Missing", MostRecentCytologyCotestResult)) %>%
+  mutate(MostRecentCytologyCotestResult = ifelse(MostRecentCytologyCotestResult == "ALL", "Result Missing", MostRecentCytologyCotestResult)) %>%
   mutate(MostRecentCytologyCotestResult = ifelse(is.na(MostRecentCytologyCotestResult), "No Result Found", MostRecentCytologyCotestResult)) %>%
   mutate(age_group = cut(age, breaks=c(0,24,29,65,120), labels=c("Under 25","25 to 29","30 to 65","Over 65")))
 

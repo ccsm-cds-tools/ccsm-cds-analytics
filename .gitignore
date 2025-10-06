@@ -5,7 +5,7 @@ public/
 .Rdata
 .Rhistory
 .DS_Store
-index-files/
-
+index_files/
+index_cache/
 
 /_*.local
